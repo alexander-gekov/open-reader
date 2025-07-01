@@ -15,6 +15,11 @@ export default defineNuxtConfig({
       clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY,
     },
     clerkSecretKey: process.env.CLERK_SECRET_KEY,
+    r2AccessKeyId: process.env.R2_ACCESS_KEY_ID,
+    r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    r2Endpoint: process.env.R2_ENDPOINT,
+    r2BucketName: process.env.R2_BUCKET_NAME,
+    togetherApiKey: process.env.TOGETHER_API_KEY,
   },
 
   modules: ["shadcn-nuxt", "@clerk/nuxt", "@nuxtjs/color-mode", "@vueuse/nuxt"],

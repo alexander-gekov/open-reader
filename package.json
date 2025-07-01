@@ -10,6 +10,7 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.840.0",
     "@clerk/nuxt": "^1.7.4",
     "@nuxtjs/color-mode": "^3.5.2",
     "@prisma/client": "^6.11.0",
