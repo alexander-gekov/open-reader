@@ -13,6 +13,8 @@
         <input
           ref="fileInputRef"
           type="file"
+          accept=".pdf,application/pdf"
+          multiple
           class="hidden"
           @change="onFileChange" />
 
@@ -26,12 +28,20 @@
         <div class="flex flex-col items-center justify-center">
           <p
             class="relative z-20 font-sans text-base font-bold text-neutral-700 dark:text-neutral-300">
-            Upload file
+            Upload PDF Files
           </p>
           <p
             class="relative z-20 mt-2 font-sans text-base font-normal text-neutral-400 dark:text-neutral-400">
-            Drag or drop your files here or click to upload
+            Drag or drop your PDF files here or click to upload
           </p>
+
+          <Button 
+            type="button" 
+            class="relative z-20 mt-4"
+            @click.stop="handleClick">
+            <LucideUpload class="w-4 h-4 mr-2" />
+            Choose PDF Files
+          </Button>
 
           <div class="relative mx-auto mt-10 w-full max-w-xl space-y-4">
             <Motion
@@ -48,13 +58,22 @@
                   class="max-w-xs truncate text-base text-neutral-700 dark:text-neutral-300">
                   {{ file.name }}
                 </Motion>
-                <Motion
-                  as="p"
-                  :initial="{ opacity: 0 }"
-                  :animate="{ opacity: 1 }"
-                  class="w-fit shrink-0 rounded-lg px-2 py-1 text-sm text-neutral-600 shadow-input dark:bg-neutral-800 dark:text-white">
-                  {{ (file.size / (1024 * 1024)).toFixed(2) }} MB
-                </Motion>
+                <div class="flex items-center gap-2">
+                  <Motion
+                    as="p"
+                    :initial="{ opacity: 0 }"
+                    :animate="{ opacity: 1 }"
+                    class="w-fit shrink-0 rounded-lg px-2 py-1 text-sm text-neutral-600 shadow-input dark:bg-neutral-800 dark:text-white">
+                    {{ (file.size / (1024 * 1024)).toFixed(2) }} MB
+                  </Motion>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    @click.stop="removeFile(idx)"
+                    class="h-8 w-8 p-0 text-red-500 hover:text-red-700">
+                    <LucideX class="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
 
               <div
@@ -64,7 +83,7 @@
                   :initial="{ opacity: 0 }"
                   :animate="{ opacity: 1 }"
                   class="rounded-md bg-gray-100 px-1.5 py-1 text-sm dark:bg-neutral-800">
-                  {{ file.type || "unknown type" }}
+                  {{ file.type || "application/pdf" }}
                 </Motion>
                 <Motion
                   as="p"
@@ -99,7 +118,7 @@
                       }
                     : {}
                 ">
-                <LucideUpload
+                <LucideFileText
                   class="text-neutral-600 dark:text-neutral-400 w-14 h-14" />
               </Motion>
 
@@ -110,6 +129,20 @@
                   'opacity-0': !isActive,
                 }"></div>
             </template>
+          </div>
+
+          <div v-if="files.length > 0" class="mt-6 flex gap-2">
+            <Button 
+              @click.stop="clearFiles"
+              variant="outline"
+              class="relative z-20">
+              Clear All
+            </Button>
+            <Button 
+              @click.stop="$emit('upload', files)"
+              class="relative z-20">
+              Upload {{ files.length }} PDF{{ files.length > 1 ? 's' : '' }}
+            </Button>
           </div>
         </div>
       </div>
@@ -122,7 +155,7 @@ import type { HTMLAttributes } from "vue";
 import { cn } from "@/lib/utils";
 import { Motion } from "motion-v";
 import { ref } from "vue";
-import { LucideUpload } from "lucide-vue-next";
+import { LucideUpload, LucideFileText, LucideX } from "lucide-vue-next";
 
 interface FileUploadProps {
   class?: HTMLAttributes["class"];
@@ -133,6 +166,7 @@ const props = defineProps<FileUploadProps>();
 
 const emit = defineEmits<{
   (e: "update:modelValue", files: File[]): void;
+  (e: "upload", files: File[]): void;
 }>();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
@@ -140,15 +174,29 @@ const isActive = ref<boolean>(false);
 
 const files = ref<File[]>(props.modelValue || []);
 
+function validatePDF(file: File): boolean {
+  const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  if (!isPDF) {
+    alert(`"${file.name}" is not a PDF file. Please upload only PDF files.`);
+    return false;
+  }
+  return true;
+}
+
 function handleFileChange(newFiles: File[]) {
-  files.value = [...files.value, ...newFiles];
-  emit("update:modelValue", files.value);
+  const validFiles = newFiles.filter(validatePDF);
+  if (validFiles.length > 0) {
+    files.value = [...files.value, ...validFiles];
+    emit("update:modelValue", files.value);
+  }
 }
 
 function onFileChange(e: Event) {
   const input = e.target as HTMLInputElement;
   if (!input.files) return;
   handleFileChange(Array.from(input.files));
+  // Reset input to allow selecting the same file again
+  input.value = '';
 }
 
 function handleClick() {
@@ -167,6 +215,16 @@ function handleDrop(e: DragEvent) {
     ? Array.from(e.dataTransfer.files)
     : [];
   if (droppedFiles.length) handleFileChange(droppedFiles);
+}
+
+function removeFile(index: number) {
+  files.value.splice(index, 1);
+  emit("update:modelValue", files.value);
+}
+
+function clearFiles() {
+  files.value = [];
+  emit("update:modelValue", files.value);
 }
 </script>
 
