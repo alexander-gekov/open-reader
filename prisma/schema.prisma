@@ -5,3 +5,88 @@ datasource db {
   // uncomment next line if you use Prisma <5.10
   // directUrl = env("DATABASE_URL_UNPOOLED")
 }
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  clerkId   String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  documents Document[]
+  
+  @@map("users")
+}
+
+model Document {
+  id          String   @id @default(cuid())
+  fileName    String
+  originalName String
+  fileSize    Int
+  mimeType    String
+  s3Key       String   @unique
+  s3Url       String
+  textContent String?  @db.Text
+  totalPages  Int?
+  status      DocumentStatus @default(PROCESSING)
+  userId      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks Chunk[]
+  
+  @@map("documents")
+}
+
+model Chunk {
+  id         String   @id @default(cuid())
+  documentId String
+  index      Int
+  text       String   @db.Text
+  startPage  Int?
+  endPage    Int?
+  wordCount  Int
+  createdAt  DateTime @default(now())
+  
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  audioFiles AudioFile[]
+  
+  @@unique([documentId, index])
+  @@map("chunks")
+}
+
+model AudioFile {
+  id          String      @id @default(cuid())
+  chunkId     String
+  s3Key       String      @unique
+  s3Url       String
+  audioFormat String      @default("mp3")
+  duration    Float?
+  fileSize    Int?
+  status      AudioStatus @default(PROCESSING)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  chunk Chunk @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  
+  @@map("audio_files")
+}
+
+enum DocumentStatus {
+  UPLOADING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AudioStatus {
+  PENDING
+  PROCESSING  
+  COMPLETED
+  FAILED
+}
