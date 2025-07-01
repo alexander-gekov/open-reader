@@ -14,6 +14,7 @@
           ref="fileInputRef"
           type="file"
           class="hidden"
+          accept=".pdf"
           @change="onFileChange" />
 
         <!-- Grid pattern -->
