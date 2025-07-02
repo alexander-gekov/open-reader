@@ -5,3 +5,20 @@ datasource db {
   // uncomment next line if you use Prisma <5.10
   // directUrl = env("DATABASE_URL_UNPOOLED")
 }
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model TTSSettings {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  provider      String    @default("elevenlabs") // elevenlabs, together, replicate
+  apiKey        String
+  model         String?   // For provider-specific model IDs
+  voice         String?   // For provider-specific voice IDs
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId])
+}

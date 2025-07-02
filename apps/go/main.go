@@ -8,12 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alexandergekov/open-reader/apps/go/tts"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/ledongthuc/pdf"
@@ -30,8 +31,8 @@ func loadEnv() {
 
 	// Try to find env file in current directory or apps/go
 	envPaths := []string{
-		filepath.Join(dir, "env"),
-		filepath.Join(dir, "apps", "go", "env"),
+		path.Join(dir, "env"),
+		path.Join(dir, "apps", "go", "env"),
 	}
 
 	var envFile string
@@ -106,6 +107,7 @@ type ChunkProcessor struct {
 	audioCache  map[string][]byte
 	stopProcess chan bool      // Channel to stop processing
 	filename    string        // Store the current file's name
+	settings    TTSSettings   // Store TTS settings
 }
 
 type UploadResponse struct {
@@ -114,25 +116,30 @@ type UploadResponse struct {
 	AudioID string   `json:"audio_id"`
 }
 
+type TTSSettings struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"apiKey"`
+	Model    string `json:"model"`
+	Voice    string `json:"voice"`
+}
+
 func main() {
 	loadEnv()
 
+	// Get API key but don't require it
 	apiKey := os.Getenv("ELEVENLABS_API_KEY")
-	if apiKey == "" {
-		log.Fatal("ELEVENLABS_API_KEY environment variable is required")
-	}
 
 	// Create audio directory if it doesn't exist
 	if err := os.MkdirAll("./uploads/audio", 0755); err != nil {
 		log.Fatal("Failed to create audio directory:", err)
 	}
 
-	// Initialize the processor with the API key
+	// Initialize the processor
 	processor = &ChunkProcessor{
 		audioFiles: make(map[int]string),
 		processing: make(map[int]bool),
 		client:     &http.Client{Timeout: 30 * time.Second},
-		apiKey:     apiKey,
+		apiKey:     apiKey, // This is now optional
 		audioCache: make(map[string][]byte),
 	}
 
@@ -167,6 +174,50 @@ func main() {
 	r.GET("/health", healthHandler)
 	r.GET("/test-audio", testAudioHandler)
 	r.GET("/start-next/:chunk", startNextChunkHandler)
+	r.GET("/settings", func(c *gin.Context) {
+		// Get settings from request header
+		settings := TTSSettings{
+			Provider: c.GetHeader("X-TTS-Provider"),
+			APIKey:   c.GetHeader("X-TTS-API-Key"),
+			Model:    c.GetHeader("X-TTS-Model"),
+			Voice:    c.GetHeader("X-TTS-Voice"),
+		}
+		c.JSON(http.StatusOK, settings)
+	})
+	r.POST("/generate-audio", func(c *gin.Context) {
+		var req struct {
+			Text     string      `json:"text"`
+			Settings TTSSettings `json:"settings"`
+			Filename string      `json:"filename"`
+			Chunk    int         `json:"chunk"`
+		}
+
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if req.Filename == "" {
+			req.Filename = fmt.Sprintf("generated_%d", time.Now().Unix())
+		}
+
+		options := map[string]string{
+			"model": req.Settings.Model,
+			"voice": req.Settings.Voice,
+			"filename": req.Filename,
+			"chunk": fmt.Sprintf("%d", req.Chunk),
+		}
+		audioData, err := generateAudio(req.Text, req.Settings, options)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.Header("Content-Type", "audio/mpeg")
+		c.Header("Content-Length", fmt.Sprintf("%d", len(audioData)))
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "audio/mpeg", audioData)
+	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -326,7 +377,7 @@ func uploadHandler(c *gin.Context) {
 	// Create a clean filename without extension and special characters
 	baseFilename := strings.TrimSuffix(header.Filename, ".pdf")
 	cleanFilename := regexp.MustCompile(`[^a-zA-Z0-9]+`).ReplaceAllString(baseFilename, "_")
-	filepath := filepath.Join(uploadsDir, cleanFilename+".pdf")
+	filepath := path.Join(uploadsDir, cleanFilename+".pdf")
 
 	if _, err := os.Stat(filepath); err == nil {
 		log.Printf("File %s already exists, reusing it", filepath)
@@ -357,7 +408,31 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	audioID := processor.ProcessChunks(chunks, cleanFilename)
+	// Get TTS settings from headers
+	settings := TTSSettings{
+		Provider: c.GetHeader("X-TTS-Provider"),
+		APIKey:   c.GetHeader("X-TTS-API-Key"),
+		Model:    c.GetHeader("X-TTS-Model"),
+		Voice:    c.GetHeader("X-TTS-Voice"),
+	}
+
+	// Validate required settings
+	if settings.Provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "TTS provider is required",
+		})
+		return
+	}
+
+	// Only require API key for non-fallback providers
+	if settings.Provider != "fallback" && settings.APIKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "API key is required for non-fallback providers",
+		})
+		return
+	}
+
+	audioID := processor.ProcessChunks(chunks, cleanFilename, settings)
 
 	c.JSON(http.StatusOK, UploadResponse{
 		Message: "PDF processed successfully",
@@ -399,7 +474,7 @@ func getAudioStatusHandler(c *gin.Context) {
 	if exists {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ready",
-			"url":       "/static/audio/" + filepath.Base(audioPath),
+			"url":       "/static/audio/" + path.Base(audioPath),
 			"hasNext":   chunkIndex + 1 < len(processor.chunks),
 			"nextReady": processor.audioFiles[chunkIndex + 1] != "",
 		})
@@ -443,6 +518,14 @@ func healthHandler(c *gin.Context) {
 func testAudioHandler(c *gin.Context) {
 	testText := "Hello! This is a test of the text-to-speech system. How does it sound?"
 
+	// Get settings from headers
+	settings := TTSSettings{
+		Provider: c.GetHeader("X-TTS-Provider"),
+		APIKey:   c.GetHeader("X-TTS-API-Key"),
+		Model:    c.GetHeader("X-TTS-Model"),
+		Voice:    c.GetHeader("X-TTS-Voice"),
+	}
+
 	// Check cache first
 	processor.mutex.RLock()
 	if cachedAudio, exists := processor.audioCache[testText]; exists {
@@ -456,7 +539,13 @@ func testAudioHandler(c *gin.Context) {
 	}
 	processor.mutex.RUnlock()
 
-	audioData, err := processor.callElevenLabsTTS(testText)
+	options := map[string]string{
+		"model": settings.Model,
+		"voice": settings.Voice,
+		"filename": "test_audio",
+		"chunk": "1", // Start from chunk 1 for testing
+	}
+	audioData, err := generateAudio(testText, settings, options)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Test audio failed: %v", err)})
 		return
@@ -473,7 +562,7 @@ func testAudioHandler(c *gin.Context) {
 	c.Data(http.StatusOK, "audio/mpeg", audioData)
 }
 
-func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string) string {
+func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string, settings TTSSettings) string {
 	cp.mutex.Lock()
 	cp.chunks = chunks
 	cp.currentIdx = 0
@@ -482,6 +571,7 @@ func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string) string
 	cp.lastError = ""
 	cp.stopProcess = make(chan bool, 1)
 	cp.filename = filename
+	cp.settings = settings
 	cp.mutex.Unlock()
 
 	audioID := cp.filename
@@ -501,7 +591,7 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 
 	// Check if audio file already exists
 	expectedFileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
-	expectedFilePath := filepath.Join("uploads", "audio", expectedFileName)
+	expectedFilePath := path.Join("uploads", "audio", expectedFileName)
 	
 	if _, err := os.Stat(expectedFilePath); err == nil {
 		// File exists, reuse it
@@ -516,30 +606,36 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 	cp.mutex.Unlock()
 
 	text := cp.chunks[index]
-	audioData, err := cp.callElevenLabsTTS(text)
-	
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
+	options := map[string]string{
+		"model": cp.settings.Model,
+		"voice": cp.settings.Voice,
+		"filename": cp.filename,
+		"chunk": fmt.Sprintf("%d", index),
+	}
 
+	audioData, err := generateAudio(text, cp.settings, options)
 	if err != nil {
+		cp.mutex.Lock()
 		cp.lastError = err.Error()
 		delete(cp.processing, index)
+		cp.mutex.Unlock()
 		return
 	}
 
-	// Save the audio file with the new naming convention
-	fileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
-	filePath := filepath.Join("uploads", "audio", fileName)
-	
-	if err := os.WriteFile(filePath, audioData, 0644); err != nil {
-		cp.lastError = fmt.Sprintf("Failed to save audio file: %v", err)
+	// Save the audio file
+	audioPath := path.Join("uploads", "audio", expectedFileName)
+	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
+		cp.mutex.Lock()
+		cp.lastError = fmt.Sprintf("failed to save audio file: %v", err)
 		delete(cp.processing, index)
+		cp.mutex.Unlock()
 		return
 	}
 
-	// Store the file path and mark as not processing
-	cp.audioFiles[index] = filePath
+	cp.mutex.Lock()
+	cp.audioFiles[index] = audioPath
 	delete(cp.processing, index)
+	cp.mutex.Unlock()
 }
 
 func (cp *ChunkProcessor) callElevenLabsTTS(text string) ([]byte, error) {
@@ -638,4 +734,9 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func generateAudio(text string, settings TTSSettings, options map[string]string) ([]byte, error) {
+	provider := tts.NewTTSProvider(settings.Provider, settings.APIKey)
+	return provider.GenerateAudio(text, options)
 } 

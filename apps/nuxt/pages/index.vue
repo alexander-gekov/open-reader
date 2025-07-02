@@ -71,6 +71,15 @@ const previousVolume = ref([1]);
 const error = ref<string | null>(null);
 const isPreloading = ref(false);
 
+const { data: ttsSettings } = await useFetch("/api/settings");
+
+const showSettingsWarning = computed(() => {
+  return (
+    !ttsSettings.value?.provider ||
+    (ttsSettings.value?.provider !== "fallback" && !ttsSettings.value?.apiKey)
+  );
+});
+
 const formatTime = (time: number) => {
   const minutes = Math.floor(time / 60);
   const seconds = Math.floor(time % 60);
@@ -151,22 +160,17 @@ const preloadNextChunk = async () => {
 
     // Trigger the processing of next chunk immediately
     try {
-      await fetch(
-        `http://localhost:8080/start-next/${currentDoc.value.currentChunk}`
-      );
+      await $fetch(`/api/audio/start-next/${currentDoc.value.currentChunk}`);
     } catch (err) {
       console.error("Failed to trigger next chunk processing:", err);
     }
 
     // Start polling for the next chunk
     while (isPreloading.value) {
-      const response = await fetch(
-        `http://localhost:8080/audio/status/${nextChunkIndex}`
-      );
-      const data = await response.json();
+      const response = await $fetch(`/api/audio/status/${nextChunkIndex}`);
 
-      if (data.status === "ready" && data.url) {
-        const audioUrl = `http://localhost:8080${data.url}`;
+      if (response.status === "ready" && response.url) {
+        const audioUrl = `/api/audio${response.url}`;
 
         // Create and setup the next audio player
         nextAudioPlayer.value = new Audio();
@@ -175,10 +179,18 @@ const preloadNextChunk = async () => {
         nextAudioPlayer.value.preload = "auto"; // Force preloading
 
         // Create a promise that resolves when enough data is loaded
-        const canPlayPromise = new Promise((resolve) => {
+        const canPlayPromise = new Promise((resolve, reject) => {
           nextAudioPlayer.value?.addEventListener("canplaythrough", resolve, {
             once: true,
           });
+          nextAudioPlayer.value?.addEventListener(
+            "error",
+            (e) => {
+              console.error("Error loading audio:", e);
+              reject(new Error("Failed to load audio"));
+            },
+            { once: true }
+          );
         });
 
         // Set properties and start loading
@@ -186,21 +198,27 @@ const preloadNextChunk = async () => {
         nextAudioPlayer.value.volume = volume.value[0];
         nextAudioPlayer.value.src = audioUrl;
 
-        // Wait for enough data to be loaded
-        await canPlayPromise;
-
-        isPreloading.value = false;
-        return;
+        try {
+          // Wait for enough data to be loaded
+          await canPlayPromise;
+          isPreloading.value = false;
+          return;
+        } catch (err) {
+          console.error("Error during preload:", err);
+          // Continue polling if preload fails
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          continue;
+        }
       }
 
-      if (data.status === "error") {
-        console.error("Error preloading next chunk:", data.error);
+      if (response.status === "error") {
+        console.error("Error preloading next chunk:", response.error);
         isPreloading.value = false;
         return;
       }
 
       // Wait before polling again
-      await new Promise((resolve) => setTimeout(resolve, 500)); // Reduced polling interval
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
   } catch (err) {
     console.error("Error preloading next chunk:", err);
@@ -290,14 +308,13 @@ const playNextChunk = async () => {
 
   try {
     console.log("Checking audio status...");
-    const response = await fetch(
-      `http://localhost:8080/audio/status/${currentDoc.value.currentChunk}`
+    const response = await $fetch(
+      `/api/audio/status/${currentDoc.value.currentChunk}`
     );
-    const data = await response.json();
-    console.log("Audio status:", data);
+    console.log("Audio status:", response);
 
-    if (data.status === "ready" && data.url) {
-      const audioUrl = `http://localhost:8080${data.url}`;
+    if (response.status === "ready" && response.url) {
+      const audioUrl = `/api/audio${response.url}`;
       console.log("Playing audio from URL:", audioUrl);
 
       if (!audioPlayer.value) {
@@ -307,10 +324,18 @@ const playNextChunk = async () => {
 
       // Set up event listeners before setting src
       audioPlayer.value.preload = "auto";
-      const canPlayPromise = new Promise((resolve) => {
+      const canPlayPromise = new Promise((resolve, reject) => {
         audioPlayer.value?.addEventListener("canplaythrough", resolve, {
           once: true,
         });
+        audioPlayer.value?.addEventListener(
+          "error",
+          (e) => {
+            console.error("Error loading audio:", e);
+            reject(new Error("Failed to load audio"));
+          },
+          { once: true }
+        );
       });
 
       // If this is a new chunk, set it up for playback
@@ -319,38 +344,39 @@ const playNextChunk = async () => {
         audioPlayer.value.playbackRate = playbackRate.value;
         audioPlayer.value.volume = volume.value[0];
 
-        // Wait for enough data to be loaded
-        await canPlayPromise;
+        try {
+          // Wait for enough data to be loaded
+          await canPlayPromise;
+        } catch (err) {
+          console.error("Error loading audio:", err);
+          error.value = "Failed to load audio";
+          isPlaying.value = false;
+          return;
+        }
       }
 
       // Start playing
-      if (!audioPlayer.value.src.includes(data.url) || isPlaying.value) {
-        try {
-          const playPromise = audioPlayer.value.play();
-          if (playPromise) {
-            playPromise.catch((error) => {
-              console.error("Error during playback:", error);
-              isPlaying.value = false;
-            });
-          }
-        } catch (error) {
-          console.error("Error starting playback:", error);
-          isPlaying.value = false;
+      try {
+        const playPromise = audioPlayer.value.play();
+        if (playPromise) {
+          await playPromise;
         }
-        console.log("Audio started playing");
+      } catch (error) {
+        console.error("Error starting playback:", error);
+        isPlaying.value = false;
       }
       return;
     }
 
-    if (data.status === "error") {
-      console.error("Error generating audio:", data.error);
-      error.value = data.error || "Failed to generate audio";
+    if (response.status === "error") {
+      console.error("Error generating audio:", response.error);
+      error.value = response.error || "Failed to generate audio";
       isPlaying.value = false;
       return;
     }
 
     // If still processing, wait and try again
-    await new Promise((resolve) => setTimeout(resolve, 500)); // Reduced polling interval
+    await new Promise((resolve) => setTimeout(resolve, 500));
     await playNextChunk();
   } catch (err) {
     console.error("Error playing audio:", err);
@@ -368,7 +394,7 @@ const startAudioPlayback = async () => {
 };
 
 // Handles a single PDF file upload and sets the current document once processed
-const uploadFile = async (file: File) => {
+const handleFileUpload = async (file: File) => {
   if (file.type !== "application/pdf") {
     alert("Please upload a PDF file");
     return;
@@ -386,9 +412,21 @@ const uploadFile = async (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
 
+    console.log("TTS Settings:", ttsSettings.value); // Debug log
+
+    const headers = {
+      "X-TTS-Provider": ttsSettings.value?.provider || "elevenlabs",
+      "X-TTS-API-Key": ttsSettings.value?.apiKey || "",
+      "X-TTS-Model": ttsSettings.value?.model || "",
+      "X-TTS-Voice": ttsSettings.value?.voice || "",
+    };
+
+    console.log("Request Headers:", headers); // Debug log
+
     const response = await $fetch<UploadResponse>("/api/upload", {
       method: "POST",
       body: formData,
+      headers,
     });
 
     currentDoc.value = {
@@ -397,9 +435,13 @@ const uploadFile = async (file: File) => {
       totalChunks: response.totalChunks,
       currentChunk: 0,
     };
-  } catch (error) {
-    console.error("Upload failed:", error);
-    alert("Failed to upload and process the PDF");
+  } catch (error: any) {
+    console.error("Error uploading file:", error);
+    const errorMessage =
+      error.data?.message ||
+      error.message ||
+      "Failed to upload and process the PDF";
+    alert(errorMessage);
   } finally {
     isUploading.value = false;
   }
@@ -410,7 +452,7 @@ const uploadToR2 = async () => {
   if (!files.value.length) return;
 
   // Currently we only support uploading the first selected PDF
-  await uploadFile(files.value[0]);
+  await handleFileUpload(files.value[0]);
 
   // Clear the list after successful upload so the UI resets
   files.value = [];
@@ -477,7 +519,29 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
 
 <template>
   <div class="container mx-auto">
-    <div v-if="!currentDoc" class="space-y-6 p-8 dark:bg-black">
+    <div v-if="showSettingsWarning" class="p-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>TTS Settings Required</CardTitle>
+          <CardDescription>
+            Please configure your Text-to-Speech settings before uploading files
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p class="text-muted-foreground">
+            You need to set up your preferred TTS provider and API key to use
+            this feature.
+          </p>
+        </CardContent>
+        <CardFooter>
+          <NuxtLink to="/settings">
+            <Button>Configure Settings</Button>
+          </NuxtLink>
+        </CardFooter>
+      </Card>
+    </div>
+
+    <div v-else-if="!currentDoc" class="space-y-6 p-8 dark:bg-black">
       <FileUpload
         v-model="files"
         class="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800">
