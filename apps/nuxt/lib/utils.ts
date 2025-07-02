@@ -35,6 +35,12 @@ export function chunkText(text: string, maxWordsPerChunk = 50): string[] {
 }
 
 export async function storeTextChunks(docId: string, chunks: string[]) {
+  if (!import.meta.server) {
+    throw new Error(
+      "Redis operations can only be performed on the server side"
+    );
+  }
+
   const pipeline = redis.pipeline();
 
   chunks.forEach((chunk, index) => {
