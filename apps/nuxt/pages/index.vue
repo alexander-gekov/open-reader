@@ -78,7 +78,14 @@ const previousVolume = ref([1]);
 const error = ref<string | null>(null);
 const isPreloading = ref(false);
 
-const { data: ttsSettings } = await useFetch("/api/settings");
+type TTSProvider = {
+  provider: string;
+  apiKey: string;
+  model: string;
+  voice: string;
+};
+
+const { data: ttsSettings } = await useFetch<TTSProvider>("/api/settings");
 
 const showSettingsWarning = computed(() => {
   return (
