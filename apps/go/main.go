@@ -8,12 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alexandergekov/open-reader/apps/go/tts"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/ledongthuc/pdf"
@@ -30,8 +31,8 @@ func loadEnv() {
 
 	// Try to find env file in current directory or apps/go
 	envPaths := []string{
-		filepath.Join(dir, "env"),
-		filepath.Join(dir, "apps", "go", "env"),
+		path.Join(dir, "env"),
+		path.Join(dir, "apps", "go", "env"),
 	}
 
 	var envFile string
@@ -106,6 +107,7 @@ type ChunkProcessor struct {
 	audioCache  map[string][]byte
 	stopProcess chan bool      // Channel to stop processing
 	filename    string        // Store the current file's name
+	settings    TTSSettings   // Store TTS settings
 }
 
 type UploadResponse struct {
@@ -114,25 +116,30 @@ type UploadResponse struct {
 	AudioID string   `json:"audio_id"`
 }
 
+type TTSSettings struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"apiKey"`
+	Model    string `json:"model"`
+	Voice    string `json:"voice"`
+}
+
 func main() {
 	loadEnv()
 
+	// Get API key but don't require it
 	apiKey := os.Getenv("ELEVENLABS_API_KEY")
-	if apiKey == "" {
-		log.Fatal("ELEVENLABS_API_KEY environment variable is required")
-	}
 
 	// Create audio directory if it doesn't exist
 	if err := os.MkdirAll("./uploads/audio", 0755); err != nil {
 		log.Fatal("Failed to create audio directory:", err)
 	}
 
-	// Initialize the processor with the API key
+	// Initialize the processor
 	processor = &ChunkProcessor{
 		audioFiles: make(map[int]string),
 		processing: make(map[int]bool),
 		client:     &http.Client{Timeout: 30 * time.Second},
-		apiKey:     apiKey,
+		apiKey:     apiKey, // This is now optional
 		audioCache: make(map[string][]byte),
 	}
 
@@ -167,6 +174,50 @@ func main() {
 	r.GET("/health", healthHandler)
 	r.GET("/test-audio", testAudioHandler)
 	r.GET("/start-next/:chunk", startNextChunkHandler)
+	r.GET("/settings", func(c *gin.Context) {
+		// Get settings from request header
+		settings := TTSSettings{
+			Provider: c.GetHeader("X-TTS-Provider"),
+			APIKey:   c.GetHeader("X-TTS-API-Key"),
+			Model:    c.GetHeader("X-TTS-Model"),
+			Voice:    c.GetHeader("X-TTS-Voice"),
+		}
+		c.JSON(http.StatusOK, settings)
+	})
+	r.POST("/generate-audio", func(c *gin.Context) {
+		var req struct {
+			Text     string      `json:"text"`
+			Settings TTSSettings `json:"settings"`
+			Filename string      `json:"filename"`
+			Chunk    int         `json:"chunk"`
+		}
+
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if req.Filename == "" {
+			req.Filename = fmt.Sprintf("generated_%d", time.Now().Unix())
+		}
+
+		options := map[string]string{
+			"model": req.Settings.Model,
+			"voice": req.Settings.Voice,
+			"filename": req.Filename,
+			"chunk": fmt.Sprintf("%d", req.Chunk),
+		}
+		audioData, err := generateAudio(req.Text, req.Settings, options)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.Header("Content-Type", "audio/mpeg")
+		c.Header("Content-Length", fmt.Sprintf("%d", len(audioData)))
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "audio/mpeg", audioData)
+	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -199,22 +250,43 @@ func extractTextFromPDF(filepath string) (string, error) {
 		}
 		
 		// Clean up the text
-		// Replace multiple spaces with a single space
-		content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
-		// Add space after period if missing
-		content = regexp.MustCompile(`\.(\S)`).ReplaceAllString(content, ". $1")
-		// Add space after comma if missing
-		content = regexp.MustCompile(`,(\S)`).ReplaceAllString(content, ", $1")
-		// Add space after colon if missing
-		content = regexp.MustCompile(`\:(\S)`).ReplaceAllString(content, ": $1")
-		// Add space after semicolon if missing
-		content = regexp.MustCompile(`\;(\S)`).ReplaceAllString(content, "; $1")
-		// Fix spaces around parentheses
-		content = regexp.MustCompile(`\s*\(\s*`).ReplaceAllString(content, " (")
-		content = regexp.MustCompile(`\s*\)\s*`).ReplaceAllString(content, ") ")
-		// Fix spaces around brackets
-		content = regexp.MustCompile(`\s*\[\s*`).ReplaceAllString(content, " [")
-		content = regexp.MustCompile(`\s*\]\s*`).ReplaceAllString(content, "] ")
+		// // First, handle cases where words are incorrectly joined
+		// // Look for patterns of lowercase followed by uppercase and add a space
+		// content = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(content, "$1 $2")
+		
+		// // Look for patterns of letter followed by number or vice versa and add a space
+		// content = regexp.MustCompile(`([a-zA-Z])(\d)`).ReplaceAllString(content, "$1 $2")
+		// content = regexp.MustCompile(`(\d)([a-zA-Z])`).ReplaceAllString(content, "$1 $2")
+		
+		// // Replace multiple spaces with a single space
+		// content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+		
+		// // Add space after period if missing
+		// content = regexp.MustCompile(`\.(\S)`).ReplaceAllString(content, ". $1")
+		
+		// // Add space after comma if missing
+		// content = regexp.MustCompile(`,(\S)`).ReplaceAllString(content, ", $1")
+		
+		// // Add space after colon if missing
+		// content = regexp.MustCompile(`\:(\S)`).ReplaceAllString(content, ": $1")
+		
+		// // Add space after semicolon if missing
+		// content = regexp.MustCompile(`\;(\S)`).ReplaceAllString(content, "; $1")
+		
+		// // Fix spaces around parentheses
+		// content = regexp.MustCompile(`\s*\(\s*`).ReplaceAllString(content, " (")
+		// content = regexp.MustCompile(`\s*\)\s*`).ReplaceAllString(content, ") ")
+		
+		// // Fix spaces around brackets
+		// content = regexp.MustCompile(`\s*\[\s*`).ReplaceAllString(content, " [")
+		// content = regexp.MustCompile(`\s*\]\s*`).ReplaceAllString(content, "] ")
+		
+		// // Fix spaces around special characters
+		// content = regexp.MustCompile(`([a-zA-Z])([.,!?;:])`).ReplaceAllString(content, "$1$2 ")
+		
+		// // Fix spaces around quotes
+		// content = regexp.MustCompile(`"(\S)`).ReplaceAllString(content, `" $1`)
+		// content = regexp.MustCompile(`(\S)"`).ReplaceAllString(content, `$1 "`)
 		
 		text.WriteString(content)
 		text.WriteString("\n") // Add newline between pages
@@ -326,7 +398,7 @@ func uploadHandler(c *gin.Context) {
 	// Create a clean filename without extension and special characters
 	baseFilename := strings.TrimSuffix(header.Filename, ".pdf")
 	cleanFilename := regexp.MustCompile(`[^a-zA-Z0-9]+`).ReplaceAllString(baseFilename, "_")
-	filepath := filepath.Join(uploadsDir, cleanFilename+".pdf")
+	filepath := path.Join(uploadsDir, cleanFilename+".pdf")
 
 	if _, err := os.Stat(filepath); err == nil {
 		log.Printf("File %s already exists, reusing it", filepath)
@@ -357,7 +429,31 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	audioID := processor.ProcessChunks(chunks, cleanFilename)
+	// Get TTS settings from headers
+	settings := TTSSettings{
+		Provider: c.GetHeader("X-TTS-Provider"),
+		APIKey:   c.GetHeader("X-TTS-API-Key"),
+		Model:    c.GetHeader("X-TTS-Model"),
+		Voice:    c.GetHeader("X-TTS-Voice"),
+	}
+
+	// Validate required settings
+	if settings.Provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "TTS provider is required",
+		})
+		return
+	}
+
+	// Only require API key for non-fallback providers
+	if settings.Provider != "fallback" && settings.APIKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "API key is required for non-fallback providers",
+		})
+		return
+	}
+
+	audioID := processor.ProcessChunks(chunks, cleanFilename, settings)
 
 	c.JSON(http.StatusOK, UploadResponse{
 		Message: "PDF processed successfully",
@@ -394,12 +490,23 @@ func getAudioStatusHandler(c *gin.Context) {
 	processor.mutex.RLock()
 	defer processor.mutex.RUnlock()
 
+	// First check if the chunk index is valid
+	if chunkIndex < 0 || chunkIndex >= len(processor.chunks) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status": "error",
+			"error":  "Chunk index out of bounds",
+		})
+		return
+	}
+
 	// Check if we have an audio file for this chunk
-	audioPath, exists := processor.audioFiles[chunkIndex]
+	audioFilename, exists := processor.audioFiles[chunkIndex]
 	if exists {
+		// Return the full URL path
+		fullURL := fmt.Sprintf("http://localhost:8080/static/audio/%s", audioFilename)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ready",
-			"url":       "/static/audio/" + filepath.Base(audioPath),
+			"url":       fullURL,
 			"hasNext":   chunkIndex + 1 < len(processor.chunks),
 			"nextReady": processor.audioFiles[chunkIndex + 1] != "",
 		})
@@ -414,9 +521,9 @@ func getAudioStatusHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{
-		"status": "error",
-		"error":  "Audio not found",
+	// If we get here, the chunk exists but hasn't started processing yet
+	c.JSON(http.StatusOK, gin.H{
+		"status": "pending",
 	})
 }
 
@@ -443,6 +550,14 @@ func healthHandler(c *gin.Context) {
 func testAudioHandler(c *gin.Context) {
 	testText := "Hello! This is a test of the text-to-speech system. How does it sound?"
 
+	// Get settings from headers
+	settings := TTSSettings{
+		Provider: c.GetHeader("X-TTS-Provider"),
+		APIKey:   c.GetHeader("X-TTS-API-Key"),
+		Model:    c.GetHeader("X-TTS-Model"),
+		Voice:    c.GetHeader("X-TTS-Voice"),
+	}
+
 	// Check cache first
 	processor.mutex.RLock()
 	if cachedAudio, exists := processor.audioCache[testText]; exists {
@@ -456,7 +571,13 @@ func testAudioHandler(c *gin.Context) {
 	}
 	processor.mutex.RUnlock()
 
-	audioData, err := processor.callElevenLabsTTS(testText)
+	options := map[string]string{
+		"model": settings.Model,
+		"voice": settings.Voice,
+		"filename": "test_audio",
+		"chunk": "1", // Start from chunk 1 for testing
+	}
+	audioData, err := generateAudio(testText, settings, options)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Test audio failed: %v", err)})
 		return
@@ -473,7 +594,7 @@ func testAudioHandler(c *gin.Context) {
 	c.Data(http.StatusOK, "audio/mpeg", audioData)
 }
 
-func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string) string {
+func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string, settings TTSSettings) string {
 	cp.mutex.Lock()
 	cp.chunks = chunks
 	cp.currentIdx = 0
@@ -482,12 +603,18 @@ func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string) string
 	cp.lastError = ""
 	cp.stopProcess = make(chan bool, 1)
 	cp.filename = filename
+	cp.settings = settings
 	cp.mutex.Unlock()
 
 	audioID := cp.filename
 
-	// Start processing only the first chunk
-	go cp.generateTTS(0)
+	// Start processing the first pair of chunks
+	go func() {
+		cp.generateTTS(0)
+		if len(cp.chunks) > 1 {
+			cp.generateTTS(1)
+		}
+	}()
 
 	return audioID
 }
@@ -501,11 +628,11 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 
 	// Check if audio file already exists
 	expectedFileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
-	expectedFilePath := filepath.Join("uploads", "audio", expectedFileName)
+	expectedFilePath := path.Join("uploads", "audio", expectedFileName)
 	
 	if _, err := os.Stat(expectedFilePath); err == nil {
 		// File exists, reuse it
-		cp.audioFiles[index] = expectedFilePath
+		cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
 		delete(cp.processing, index)
 		cp.mutex.Unlock()
 		return
@@ -513,33 +640,43 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 
 	// Mark this chunk as being processed
 	cp.processing[index] = true
+	text := cp.chunks[index]
+	settings := cp.settings
 	cp.mutex.Unlock()
 
-	text := cp.chunks[index]
-	audioData, err := cp.callElevenLabsTTS(text)
-	
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
+	options := map[string]string{
+		"model": settings.Model,
+		"voice": settings.Voice,
+		"filename": cp.filename,
+		"chunk": fmt.Sprintf("%d", index),
+	}
 
+	audioData, err := generateAudio(text, settings, options)
 	if err != nil {
+		cp.mutex.Lock()
 		cp.lastError = err.Error()
 		delete(cp.processing, index)
+		cp.mutex.Unlock()
+		log.Printf("Error generating audio for chunk %d: %v", index, err)
 		return
 	}
 
-	// Save the audio file with the new naming convention
-	fileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
-	filePath := filepath.Join("uploads", "audio", fileName)
-	
-	if err := os.WriteFile(filePath, audioData, 0644); err != nil {
-		cp.lastError = fmt.Sprintf("Failed to save audio file: %v", err)
+	// Save the audio file
+	audioPath := path.Join("uploads", "audio", expectedFileName)
+	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
+		cp.mutex.Lock()
+		cp.lastError = fmt.Sprintf("failed to save audio file: %v", err)
 		delete(cp.processing, index)
+		cp.mutex.Unlock()
+		log.Printf("Error saving audio file for chunk %d: %v", index, err)
 		return
 	}
 
-	// Store the file path and mark as not processing
-	cp.audioFiles[index] = filePath
+	cp.mutex.Lock()
+	cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
 	delete(cp.processing, index)
+	cp.mutex.Unlock()
+	log.Printf("Successfully generated audio for chunk %d", index)
 }
 
 func (cp *ChunkProcessor) callElevenLabsTTS(text string) ([]byte, error) {
@@ -598,6 +735,14 @@ func startNextChunkHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate chunk index
+	if currentChunk < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Chunk index cannot be negative",
+		})
+		return
+	}
+
 	processor.mutex.Lock()
 	nextChunk := currentChunk + 1
 	if nextChunk >= len(processor.chunks) {
@@ -624,12 +769,26 @@ func startNextChunkHandler(c *gin.Context) {
 		return
 	}
 
-	// Start processing next chunk
 	processor.mutex.Unlock()
-	go processor.generateTTS(nextChunk)
+
+	// Start processing in a goroutine
+	go func() {
+		// First check if we need to generate the current chunk
+		if currentChunk >= 0 && currentChunk < len(processor.chunks) {
+			if _, exists := processor.audioFiles[currentChunk]; !exists && !processor.processing[currentChunk] {
+				processor.generateTTS(currentChunk)
+			}
+		}
+		// Then generate the next chunk
+		processor.generateTTS(nextChunk)
+		// Process the chunk after next if it exists
+		if nextChunk+1 < len(processor.chunks) {
+			processor.generateTTS(nextChunk + 1)
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Started processing next chunk",
+		"message": "Started processing chunks",
 	})
 }
 
@@ -638,4 +797,9 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func generateAudio(text string, settings TTSSettings, options map[string]string) ([]byte, error) {
+	provider := tts.NewTTSProvider(settings.Provider, settings.APIKey)
+	return provider.GenerateAudio(text, options)
 } 

@@ -24,9 +24,22 @@ export default defineEventHandler(async (event) => {
     });
     goBackendFormData.append("file", blob, file.filename);
 
+    // Forward TTS settings headers
+    const headers: Record<string, string> = {};
+    const provider = getHeader(event, "X-TTS-Provider");
+    const apiKey = getHeader(event, "X-TTS-API-Key");
+    const model = getHeader(event, "X-TTS-Model");
+    const voice = getHeader(event, "X-TTS-Voice");
+
+    if (provider) headers["X-TTS-Provider"] = provider;
+    if (apiKey) headers["X-TTS-API-Key"] = apiKey;
+    if (model) headers["X-TTS-Model"] = model;
+    if (voice) headers["X-TTS-Voice"] = voice;
+
     const response = await fetch("http://localhost:8080/upload", {
       method: "POST",
       body: goBackendFormData,
+      headers,
     });
 
     if (!response.ok) {
