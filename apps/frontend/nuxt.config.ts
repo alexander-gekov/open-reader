@@ -13,6 +13,7 @@ export default defineNuxtConfig({
     public: {
       appName: process.env.APP_NAME,
       clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY,
+      backendUrl: process.env.BACKEND_URL || 'http://localhost:8000',
     },
     clerkSecretKey: process.env.CLERK_SECRET_KEY,
     r2AccountId: process.env.R2_ACCOUNT_ID,
