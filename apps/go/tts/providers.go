@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sync"
 	"time"
 )
 
@@ -51,6 +52,24 @@ type ReplicateResponse struct {
 	Version string `json:"version"`
 }
 
+// CartesiaTTSProvider implements TTSProvider using Cartesia's API
+type CartesiaTTSProvider struct {
+	folder string
+	apiKey string
+	rateLimiter *time.Ticker
+	processing bool
+	mutex sync.Mutex
+}
+
+// NewCartesiaTTSProvider creates a new CartesiaTTSProvider instance
+func NewCartesiaTTSProvider(folder string, apiKey string) *CartesiaTTSProvider {
+	return &CartesiaTTSProvider{
+		folder: folder,
+		apiKey: apiKey,
+		rateLimiter: time.NewTicker(500 * time.Millisecond), // Rate limit to 2 requests per second
+	}
+}
+
 // NewTTSProvider creates a new TTS provider based on the provider name
 func NewTTSProvider(provider string, apiKey string) TTSProvider {
 	switch provider {
@@ -62,6 +81,8 @@ func NewTTSProvider(provider string, apiKey string) TTSProvider {
 		return &ReplicateProvider{apiKey: apiKey}
 	case "fallback":
 		return &HTGoTTSProvider{folder: "uploads/audio"}
+	case "cartesia":
+		return NewCartesiaTTSProvider("uploads/audio", apiKey)
 	default:
 		// If no API key is provided, use the fallback provider
 		if apiKey == "" {
@@ -260,8 +281,16 @@ func (p *ReplicateProvider) GenerateAudio(text string, options map[string]string
 	return io.ReadAll(resp.Body)
 }
 
+// HTGoTTSProvider implements TTSProvider using Google TTS
 type HTGoTTSProvider struct {
 	folder string
+}
+
+// NewHTGoTTSProvider creates a new HTGoTTSProvider instance
+func NewHTGoTTSProvider(folder string) *HTGoTTSProvider {
+	return &HTGoTTSProvider{
+		folder: folder,
+	}
 }
 
 func (p *HTGoTTSProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
@@ -304,6 +333,108 @@ func (p *HTGoTTSProvider) GenerateAudio(text string, options map[string]string) 
 		return nil, fmt.Errorf("failed to read audio data: %v", err)
 	}
 
+	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
+		return nil, fmt.Errorf("failed to save audio file: %v", err)
+	}
+
+	return audioData, nil
+}
+
+func (p *CartesiaTTSProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
+	p.mutex.Lock()
+	if p.processing {
+		p.mutex.Unlock()
+		return nil, fmt.Errorf("another request is being processed")
+	}
+	p.processing = true
+	p.mutex.Unlock()
+
+	// Wait for rate limiter
+	<-p.rateLimiter.C
+
+	defer func() {
+		p.mutex.Lock()
+		p.processing = false
+		p.mutex.Unlock()
+	}()
+
+	// Ensure the audio folder exists
+	if err := os.MkdirAll(p.folder, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create audio folder: %v", err)
+	}
+
+	// Get the filename and chunk number from options
+	filename := options["filename"]
+	if filename == "" {
+		return nil, fmt.Errorf("filename is required in options")
+	}
+	chunkStr := options["chunk"]
+	if chunkStr == "" {
+		return nil, fmt.Errorf("chunk number is required in options")
+	}
+
+	// Create the audio filename with PDF name and chunk number
+	audioFilename := fmt.Sprintf("%s_chunk_%s.mp3", filename, chunkStr)
+	audioPath := path.Join(p.folder, audioFilename)
+
+	// Check if file already exists
+	if _, err := os.Stat(audioPath); err == nil {
+		// File exists, read and return it
+		return os.ReadFile(audioPath)
+	}
+
+	// Prepare the request payload
+	payload := map[string]interface{}{
+		"model_id": options["model"],
+		"transcript": text,
+		"voice": map[string]string{
+			"mode": "id",
+			"id":   options["voice"],
+		},
+		"output_format": map[string]interface{}{
+			"container":   "mp3",
+			"bit_rate":   128000,
+			"sample_rate": 44100,
+		},
+		"language": "en",
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %v", err)
+	}
+
+	// Create the request
+	req, err := http.NewRequest("POST", "https://api.cartesia.ai/tts/bytes", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Add headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.apiKey))
+	req.Header.Set("Cartesia-Version", "2025-04-16")
+
+	// Make the request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Read the response
+	audioData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %v", err)
+	}
+
+	// Save the audio file
 	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
 		return nil, fmt.Errorf("failed to save audio file: %v", err)
 	}

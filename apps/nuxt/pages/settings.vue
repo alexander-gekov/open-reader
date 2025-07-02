@@ -32,6 +32,12 @@ definePageMeta({
 });
 
 import { toast } from "vue-sonner";
+import {
+  LucideCirclePlay,
+  LucideFastForward,
+  LucideRewind,
+  LucideVolume1,
+} from "lucide-vue-next";
 
 interface Provider {
   id: string;
@@ -55,6 +61,16 @@ const providers = [
     description: "High-quality, natural-sounding voices with emotion control",
     models: [{ id: "eleven_flash_v2_5", name: "Flash V2.5" }],
     voices: [{ id: "cgSgspJ2msm6clMCkdW9", name: "Bella" }],
+  },
+  {
+    id: "cartesia",
+    name: "Cartesia",
+    description: "High-quality dedicated TTS service with fast inference",
+    models: [
+      { id: "sonic-turbo", name: "Sonic Turbo" },
+      { id: "sonic-2", name: "Sonic 2" },
+    ],
+    voices: [{ id: "694f9389-aac1-45b6-b726-9d9369183238", name: "Default" }],
   },
   {
     id: "together",

@@ -8,19 +8,16 @@ export default defineEventHandler(async (event) => {
       throw new Error(`Go backend error: ${response.status}`);
     }
 
-    // Get the original headers
-    const contentType = response.headers.get("Content-Type") || "audio/mpeg";
-    const contentLength = response.headers.get("Content-Length");
+    // Get the audio data as an array buffer
+    const audioData = await response.arrayBuffer();
 
-    // Set response headers
-    setHeader(event, "Content-Type", contentType);
-    if (contentLength) {
-      setHeader(event, "Content-Length", parseInt(contentLength));
-    }
-    setHeader(event, "Cache-Control", "no-cache");
+    // Set the correct headers
+    event.node.res.setHeader("Content-Type", "audio/mpeg");
+    event.node.res.setHeader("Content-Length", audioData.byteLength);
+    event.node.res.setHeader("Cache-Control", "no-cache");
 
-    // Return the raw response body as a stream
-    return response.body;
+    // Send the audio data
+    return Buffer.from(audioData);
   } catch (error) {
     console.error("Error fetching audio file:", error);
     throw createError({

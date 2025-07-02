@@ -13,9 +13,16 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   LucideCirclePause,
   LucideCirclePlay,
+  LucideFastForward,
   LucideLoader2,
+  LucidePauseCircle,
   LucidePlayCircle,
+  LucideRewind,
   LucideUpload,
+  LucideUploadCloud,
+  LucideVolume1,
+  LucideVolume2,
+  LucideVolumeX,
 } from "lucide-vue-next";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -79,6 +86,31 @@ const showSettingsWarning = computed(() => {
     (ttsSettings.value?.provider !== "fallback" && !ttsSettings.value?.apiKey)
   );
 });
+
+const calculateCredits = (text: string) => {
+  return text.length;
+};
+
+const calculateCost = (credits: number) => {
+  return (credits * 0.001).toFixed(2);
+};
+
+const totalCredits = computed(() => {
+  if (!currentDoc.value?.chunks) return 0;
+  return currentDoc.value.chunks.reduce(
+    (acc, chunk) => acc + calculateCredits(chunk),
+    0
+  );
+});
+
+const scrollToCurrentChunk = () => {
+  const currentChunkElement = document.querySelector(
+    `[data-chunk-index="${currentDoc.value?.currentChunk}"]`
+  );
+  if (currentChunkElement) {
+    currentChunkElement.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+};
 
 const formatTime = (time: number) => {
   const minutes = Math.floor(time / 60);
@@ -150,7 +182,8 @@ watch(playbackRate, (newRate) => {
 const preloadNextChunk = async () => {
   if (
     !currentDoc.value ||
-    currentDoc.value.currentChunk >= currentDoc.value.totalChunks - 1
+    currentDoc.value.currentChunk >= currentDoc.value.totalChunks - 1 ||
+    isPreloading.value
   )
     return;
 
@@ -165,18 +198,16 @@ const preloadNextChunk = async () => {
       console.error("Failed to trigger next chunk processing:", err);
     }
 
-    // Start polling for the next chunk
+    // Start polling for the next chunk with longer intervals
     while (isPreloading.value) {
       const response = await $fetch(`/api/audio/status/${nextChunkIndex}`);
 
       if (response.status === "ready" && response.url) {
-        const audioUrl = `/api/audio${response.url}`;
+        const audioUrl = response.url;
 
         // Create and setup the next audio player
         nextAudioPlayer.value = new Audio();
-
-        // Set up event listeners before setting src to catch loading events
-        nextAudioPlayer.value.preload = "auto"; // Force preloading
+        nextAudioPlayer.value.preload = "auto";
 
         // Create a promise that resolves when enough data is loaded
         const canPlayPromise = new Promise((resolve, reject) => {
@@ -194,9 +225,9 @@ const preloadNextChunk = async () => {
         });
 
         // Set properties and start loading
+        nextAudioPlayer.value.src = audioUrl;
         nextAudioPlayer.value.playbackRate = playbackRate.value;
         nextAudioPlayer.value.volume = volume.value[0];
-        nextAudioPlayer.value.src = audioUrl;
 
         try {
           // Wait for enough data to be loaded
@@ -205,8 +236,9 @@ const preloadNextChunk = async () => {
           return;
         } catch (err) {
           console.error("Error during preload:", err);
-          // Continue polling if preload fails
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          nextAudioPlayer.value = null;
+          // Wait before trying again
+          await new Promise((resolve) => setTimeout(resolve, 2000));
           continue;
         }
       }
@@ -217,8 +249,8 @@ const preloadNextChunk = async () => {
         return;
       }
 
-      // Wait before polling again
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Wait longer before polling again
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   } catch (err) {
     console.error("Error preloading next chunk:", err);
@@ -235,39 +267,12 @@ const setupAudioPlayer = () => {
     // Move to next chunk if available
     if (
       currentDoc.value &&
-      currentDoc.value.currentChunk < currentDoc.value.totalChunks - 1 &&
-      nextAudioPlayer.value
+      currentDoc.value.currentChunk < currentDoc.value.totalChunks - 1
     ) {
       currentDoc.value.currentChunk++;
       isPlaying.value = true;
-
-      // Swap players immediately
-      if (audioPlayer.value) {
-        const oldPlayer = audioPlayer.value;
-        audioPlayer.value = nextAudioPlayer.value;
-        nextAudioPlayer.value = null;
-
-        // Start playing immediately - the audio should be preloaded
-        try {
-          const playPromise = audioPlayer.value.play();
-          if (playPromise) {
-            playPromise.catch((error) => {
-              console.error("Error during playback:", error);
-              isPlaying.value = false;
-            });
-          }
-        } catch (error) {
-          console.error("Error starting playback:", error);
-          isPlaying.value = false;
-        }
-
-        // Clean up old player after starting new playback
-        oldPlayer.remove();
-        setupAudioPlayer();
-
-        // Start preloading next chunk immediately
-        preloadNextChunk();
-      }
+      scrollToCurrentChunk();
+      await playNextChunk();
     } else {
       stopPlayback();
     }
@@ -281,12 +286,17 @@ const setupAudioPlayer = () => {
 
   audioPlayer.value.addEventListener("playing", () => {
     isPlaying.value = true;
-    // Start preloading the next chunk when current starts playing
+    // Start processing the next chunk immediately when current starts playing
     if (
       currentDoc.value &&
       currentDoc.value.currentChunk < currentDoc.value.totalChunks - 1
     ) {
-      preloadNextChunk();
+      console.log("Triggering next chunk processing");
+      $fetch(`/api/audio/start-next/${currentDoc.value.currentChunk}`).catch(
+        (err) => {
+          console.error("Failed to trigger next chunk processing:", err);
+        }
+      );
     }
   });
 
@@ -296,6 +306,16 @@ const setupAudioPlayer = () => {
 
   audioPlayer.value.addEventListener("timeupdate", () => {
     currentTime.value = audioPlayer.value?.currentTime || 0;
+
+    // When we're 50% through the current chunk, ensure next chunks are ready
+    if (
+      audioPlayer.value &&
+      currentDoc.value &&
+      currentDoc.value.currentChunk < currentDoc.value.totalChunks - 1 &&
+      currentTime.value / duration.value > 0.5
+    ) {
+      preloadNextChunk();
+    }
   });
 
   audioPlayer.value.addEventListener("loadedmetadata", () => {
@@ -314,7 +334,7 @@ const playNextChunk = async () => {
     console.log("Audio status:", response);
 
     if (response.status === "ready" && response.url) {
-      const audioUrl = `/api/audio${response.url}`;
+      const audioUrl = response.url;
       console.log("Playing audio from URL:", audioUrl);
 
       if (!audioPlayer.value) {
@@ -375,9 +395,12 @@ const playNextChunk = async () => {
       return;
     }
 
-    // If still processing, wait and try again
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    await playNextChunk();
+    // If still processing, wait longer before checking again
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (isPlaying.value) {
+      // Only continue polling if we're still supposed to be playing
+      await playNextChunk();
+    }
   } catch (err) {
     console.error("Error playing audio:", err);
     error.value = "Failed to play audio";
@@ -510,8 +533,18 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
   }
   isPreloading.value = false;
 
-  // Set new chunk and start playing
+  // Set new chunk
   currentDoc.value.currentChunk = chunkIndex;
+  scrollToCurrentChunk();
+
+  // Trigger generation of this chunk and the next one
+  try {
+    await $fetch(`/api/audio/start-next/${chunkIndex - 1}`);
+  } catch (err) {
+    console.error("Failed to trigger chunk processing:", err);
+  }
+
+  // Start playing
   isPlaying.value = true;
   await playNextChunk();
 };
@@ -583,40 +616,47 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
           </div>
 
           <div class="space-y-2">
-            <h3 class="font-medium text-foreground">Text Chunks:</h3>
+            <div class="flex justify-between items-center">
+              <h3 class="font-medium text-foreground">Text Chunks:</h3>
+              <div class="text-sm text-muted-foreground">
+                Total Credits: {{ totalCredits }} (~{{
+                  calculateCost(totalCredits)
+                }}¢)
+              </div>
+            </div>
             <ScrollArea class="h-[240px]">
               <div class="space-y-2 pr-4">
                 <div
                   v-for="(chunk, index) in currentDoc.chunks"
                   :key="index"
-                  class="p-3 rounded-md border text-sm"
+                  :data-chunk-index="index"
+                  class="p-3 rounded-md border text-sm cursor-pointer hover:bg-primary/5 transition-colors"
                   :class="[
                     index === currentDoc.currentChunk
                       ? 'bg-primary/10 border-primary/20'
                       : 'bg-muted/50 border-border',
-                  ]">
+                  ]"
+                  @click="selectAndPlayChunk(index)">
                   <span class="font-medium text-xs text-muted-foreground"
                     >Chunk {{ index + 1 }}:</span
                   >
-                  <span class="text-foreground">{{ chunk }}</span>
+                  <span
+                    class="text-foreground"
+                    :class="{
+                      'text-primary font-medium':
+                        index === currentDoc.currentChunk,
+                    }"
+                    >{{ chunk }}</span
+                  >
+                  <div class="text-xs text-muted-foreground mt-1">
+                    Credits: {{ calculateCredits(chunk) }} (~{{
+                      calculateCost(calculateCredits(chunk))
+                    }}¢)
+                  </div>
                 </div>
               </div>
             </ScrollArea>
           </div>
-
-          <!-- Chunk Selection -->
-          <!-- <div class="flex flex-wrap gap-2">
-            <Button
-              v-for="index in currentDoc.totalChunks"
-              :key="index"
-              :variant="
-                currentDoc.currentChunk === index - 1 ? 'default' : 'outline'
-              "
-              @click="selectAndPlayChunk(index - 1)"
-              class="text-sm">
-              Chunk {{ index }}
-            </Button>
-          </div> -->
 
           <!-- Audio Player -->
           <div v-if="audioPlayer" class="space-y-4">
@@ -645,11 +685,9 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
                   size="icon"
                   @click="toggleMute"
                   class="h-8 w-8">
-                  <LucideVolume2 v-if="volume[0] > 0.5" class="mr-2 h-4 w-4" />
-                  <LucideVolume1
-                    v-else-if="volume[0] > 0"
-                    class="mr-2 h-4 w-4" />
-                  <LucideVolumeX v-else class="mr-2 h-4 w-4" />
+                  <LucideVolume2 v-if="volume[0] > 0.5" class="h-4 w-4" />
+                  <LucideVolume1 v-else-if="volume[0] > 0" class="h-4 w-4" />
+                  <LucideVolumeX v-else class="h-4 w-4" />
                 </Button>
                 <Slider
                   v-model="volume"
@@ -666,12 +704,14 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
                   size="icon"
                   @click="seek(-10)"
                   class="h-8 w-8">
-                  <LucideRewind class="mr-2 h-4 w-4" />
+                  <LucideRewind class="h-4 w-4" />
                 </Button>
 
                 <Button variant="default" size="icon" @click="togglePlay">
-                  <LucideCirclePlay v-if="!isPlaying" class="mr-2 h-4 w-4" />
-                  <LucideCirclePause v-else class="mr-2 h-4 w-4" />
+                  <LucidePlayCircle
+                    v-if="!isPlaying"
+                    class="h-4 w-4 text-background" />
+                  <LucidePauseCircle v-else class="h-4 w-4" />
                 </Button>
 
                 <Button
@@ -703,12 +743,14 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
 
         <CardFooter class="flex gap-3">
           <Button @click="startAudioPlayback" :disabled="isPlaying">
-            <LucidePlayCircle v-if="!isPlaying" class="mr-2 h-4 w-4" />
-            <LucideLoader2 v-else class="mr-2 h-4 w-4 animate-spin" />
+            <LucidePlayCircle
+              v-if="!isPlaying"
+              class="h-4 w-4 text-background" />
+            <LucideLoader2 v-else class="h-4 w-4 animate-spin" />
             {{ isPlaying ? "Playing..." : "Start Audio Playback" }}
           </Button>
           <Button variant="outline" @click="resetUpload">
-            <LucideUpload class="mr-2 h-4 w-4" />
+            <LucideUploadCloud class="h-4 w-4" />
             Upload Another PDF
           </Button>
         </CardFooter>

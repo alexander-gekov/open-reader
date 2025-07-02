@@ -472,9 +472,11 @@ func getAudioStatusHandler(c *gin.Context) {
 	// Check if we have an audio file for this chunk
 	audioPath, exists := processor.audioFiles[chunkIndex]
 	if exists {
+		// Return the full URL path
+		fullURL := fmt.Sprintf("http://localhost:8080/static/audio/%s", path.Base(audioPath))
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ready",
-			"url":       "/static/audio/" + path.Base(audioPath),
+			"url":       fullURL,
 			"hasNext":   chunkIndex + 1 < len(processor.chunks),
 			"nextReady": processor.audioFiles[chunkIndex + 1] != "",
 		})
@@ -576,8 +578,13 @@ func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string, settin
 
 	audioID := cp.filename
 
-	// Start processing only the first chunk
-	go cp.generateTTS(0)
+	// Start processing the first pair of chunks
+	go func() {
+		cp.generateTTS(0)
+		if len(cp.chunks) > 1 {
+			cp.generateTTS(1)
+		}
+	}()
 
 	return audioID
 }
@@ -720,12 +727,23 @@ func startNextChunkHandler(c *gin.Context) {
 		return
 	}
 
-	// Start processing next chunk
+	// Start processing current chunk if needed and next chunk
 	processor.mutex.Unlock()
-	go processor.generateTTS(nextChunk)
+	go func() {
+		// First check if we need to generate the current chunk
+		if _, exists := processor.audioFiles[currentChunk]; !exists && !processor.processing[currentChunk] {
+			processor.generateTTS(currentChunk)
+		}
+		// Then generate the next chunk
+		processor.generateTTS(nextChunk)
+		// Process the chunk after next if it exists
+		if nextChunk+1 < len(processor.chunks) {
+			processor.generateTTS(nextChunk + 1)
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Started processing next chunk",
+		"message": "Started processing chunks",
 	})
 }
 
