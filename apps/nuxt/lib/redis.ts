@@ -1,14 +1,14 @@
-import { Redis } from "@upstash/redis";
+// import { Redis } from "@upstash/redis";
 
-const config = useRuntimeConfig();
+// const config = useRuntimeConfig();
 
-let redis: Redis;
+// let redis: Redis;
 
-if (import.meta.server) {
-  redis = new Redis({
-    url: config.upstashRedisRestUrl,
-    token: config.upstashRedisRestToken,
-  });
-}
+// if (import.meta.server) {
+//   redis = new Redis({
+//     url: config.upstashRedisRestUrl,
+//     token: config.upstashRedisRestToken,
+//   });
+// }
 
-export { redis };
+// export { redis };

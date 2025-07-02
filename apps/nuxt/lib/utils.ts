@@ -1,6 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { redis } from "~/lib/redis";
+// import { redis } from "~/lib/redis";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -35,20 +35,14 @@ export function chunkText(text: string, maxWordsPerChunk = 50): string[] {
 }
 
 export async function storeTextChunks(docId: string, chunks: string[]) {
-  if (!import.meta.server) {
-    throw new Error(
-      "Redis operations can only be performed on the server side"
-    );
-  }
-
-  const pipeline = redis.pipeline();
+  // const pipeline = redis.pipeline();
 
   chunks.forEach((chunk, index) => {
     const key = `text:${docId}:${index}`;
-    pipeline.set(key, chunk, { ex: 86400 }); // 24 hour expiry
+    // pipeline.set(key, chunk, { ex: 86400 }); // 24 hour expiry
   });
 
-  await pipeline.exec();
+  // await pipeline.exec();
 
   return chunks.length;
 }
