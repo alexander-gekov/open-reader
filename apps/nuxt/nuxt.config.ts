@@ -21,6 +21,8 @@ export default defineNuxtConfig({
     r2Endpoint: process.env.R2_ENDPOINT,
     r2BucketName: process.env.R2_BUCKET_NAME,
     togetherApiKey: process.env.TOGETHER_API_KEY,
+    upstashRedisRestUrl: process.env.UPSTASH_REDIS_REST_URL,
+    upstashRedisRestToken: process.env.UPSTASH_REDIS_REST_TOKEN,
   },
 
   modules: ["shadcn-nuxt", "@clerk/nuxt", "@nuxtjs/color-mode", "@vueuse/nuxt"],
@@ -47,11 +49,7 @@ export default defineNuxtConfig({
   ],
 
   routeRules: {
-    "/reader": { middleware: ["auth"] },
-    "/settings": { middleware: ["auth"] },
-  },
-
-  app: {
-    middleware: ["auth"],
+    "/reader": { appMiddleware: ["auth"] },
+    "/settings": { appMiddleware: ["auth"] },
   },
 });
