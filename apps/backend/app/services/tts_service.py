@@ -1,5 +1,7 @@
-THIS SHOULD BE A LINTER ERRORimport requests
+import requests
 import io
+import tempfile
+import os
 from typing import Optional
 from together import Together
 from app.core.config import settings
@@ -9,26 +11,31 @@ class TTSService:
     def __init__(self):
         self.together_client = Together(api_key=settings.together_api_key)
     
-    async def generate_speech_together_sonic(self, text: str, voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091") -> Optional[bytes]:
+    async def generate_speech_together_sonic(self, text: str, voice: str = "helpful woman") -> Optional[bytes]:
         """Generate speech using Together AI's Audio API with Cartesia Sonic"""
         try:
             # Use Together AI's Audio API to access Cartesia Sonic
             response = self.together_client.audio.speech.create(
-                model="sonic",
+                model="cartesia/sonic",
                 input=text,
-                voice=voice_id,
-                response_format="mp3",
-                speed=1.0
+                voice=voice
             )
             
-            # The response should contain audio data
-            if hasattr(response, 'content'):
-                return response.content
-            elif hasattr(response, 'data'):
-                return response.data
-            else:
-                # Try to read the response as bytes
-                return response.read() if hasattr(response, 'read') else None
+            # Create a temporary file to store the audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                temp_path = temp_file.name
+            
+            # Stream the response to the temporary file
+            response.stream_to_file(temp_path)
+            
+            # Read the file content as bytes
+            with open(temp_path, 'rb') as f:
+                audio_data = f.read()
+            
+            # Clean up the temporary file
+            os.unlink(temp_path)
+            
+            return audio_data
                 
         except Exception as e:
             print(f"Error generating speech with Together AI Sonic: {e}")
@@ -108,14 +115,14 @@ class TTSService:
         """Generate a dummy audio file for testing"""
         return b"dummy_audio_content_for_testing"
     
-    async def generate_speech(self, text: str, voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091") -> Optional[bytes]:
+    async def generate_speech(self, text: str, voice: str = "helpful woman") -> Optional[bytes]:
         """Generate speech using the best available service"""
         # Primary: Together AI Audio API with Cartesia Sonic
-        audio_data = await self.generate_speech_together_sonic(text, voice_id)
+        audio_data = await self.generate_speech_together_sonic(text, voice)
         
-        # Fallback 1: Direct Cartesia API
+        # Fallback 1: Direct Cartesia API (using voice ID instead of voice name)
         if not audio_data:
-            audio_data = await self.generate_speech_cartesia_direct(text, voice_id)
+            audio_data = await self.generate_speech_cartesia_direct(text)
         
         # Fallback 2: Demo/dummy audio
         if not audio_data:

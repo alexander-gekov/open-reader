@@ -1,6 +1,6 @@
 # Open Reader
 
-An AI-powered PDF to audio converter that extracts text from PDFs and generates speech using text-to-speech technology.
+An AI-powered PDF to audio converter that extracts text from PDFs and generates speech using **Together AI + Cartesia Sonic** text-to-speech technology.
 
 ## Architecture
 
@@ -13,12 +13,29 @@ This is a pnpm monorepo with two main applications:
 
 - 📄 PDF upload and text extraction
 - 🔤 Text chunking into sentence-based segments
-- 🎵 AI-powered text-to-speech generation using Cartesia Sonic
+- 🎵 **AI-powered text-to-speech using Together AI + Cartesia Sonic**
 - 📱 Modern scrolling text interface (like movie credits)
 - 🎧 Audio player with chunk navigation
 - 💾 Redis caching for audio files
 - ☁️ R2 storage for file management
 - 📊 Real-time processing status updates
+
+## TTS Technology
+
+This application uses **Together AI's Python SDK** to access **Cartesia Sonic** models for high-quality text-to-speech generation. The implementation includes:
+
+- **Primary**: Together AI Audio API with `cartesia/sonic` model
+- **Fallback 1**: Direct Cartesia API (optional)
+- **Fallback 2**: Demo/testing audio
+
+### Supported Voices
+
+The Together AI + Cartesia Sonic integration supports various voice options:
+- `"helpful woman"` (default)
+- `"helpful man"`
+- `"calm woman"`
+- `"calm man"`
+- And many others available through Cartesia
 
 ## Setup
 
