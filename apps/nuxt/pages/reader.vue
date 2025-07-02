@@ -23,10 +23,6 @@ import {
   LucideVolume1,
   LucideVolume2,
   LucideVolumeX,
-  LucideArrowRight,
-  LucideCheck,
-  LucideGithub,
-  LucideTwitter,
 } from "lucide-vue-next";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -36,12 +32,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { FlipWords } from "@/components/ui/flip-words";
 
 definePageMeta({
-  title: "Open Reader - Open Source PDF & Audiobook Reader",
+  title: "PDF Reader",
   layout: "default",
+  middleware: ["auth"],
 });
 
 interface UploadResponse {
@@ -83,11 +78,6 @@ const progressBarRef = ref<HTMLElement>();
 const previousVolume = ref([1]);
 const error = ref<string | null>(null);
 const isPreloading = ref(false);
-
-const email = ref("");
-const name = ref("");
-const isSubmitting = ref(false);
-const isSuccess = ref(false);
 
 type TTSProvider = {
   provider: string;
@@ -566,203 +556,214 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
   isPlaying.value = true;
   await playNextChunk();
 };
-
-const handleSubmit = async () => {
-  if (!email.value) return;
-
-  try {
-    isSubmitting.value = true;
-    await $fetch("/api/waitlist", {
-      method: "POST",
-      body: {
-        email: email.value,
-        name: name.value,
-      },
-    });
-    isSuccess.value = true;
-  } catch (error: any) {
-    console.error("Error joining waitlist:", error);
-    alert(error.data?.message || "Failed to join waitlist");
-  } finally {
-    isSubmitting.value = false;
-  }
-};
 </script>
 
 <template>
-  <div class="container mx-auto px-4 py-24 space-y-24">
-    <!-- Hero Section -->
-    <div class="text-center space-y-6">
-      <div
-        class="flex items-center justify-center gap-2 text-sm text-muted-foreground mb-8">
-        <span class="px-3 py-1 rounded-full bg-muted">Open Source</span>
-        <span class="px-3 py-1 rounded-full bg-muted">Self-Hostable</span>
-        <span class="px-3 py-1 rounded-full bg-muted">Privacy-First</span>
-      </div>
-      <h1 class="text-4xl sm:text-5xl md:text-6xl font-bold tracking-loose">
-        Your
-        <span class="text-primary inline-flex">
-          <FlipWords
-            :words="[
-              'Open Source',
-              'Privacy-First',
-              'Self-Hostable',
-              'Multi-Provider',
-              'Budget-Friendly',
-            ]"
-            :duration="2000" />
-        </span>
-        Alternative to ElevenReader
-      </h1>
-      <p class="text-xl text-muted-foreground max-w-2xl mx-auto">
-        Convert PDFs and books into natural-sounding audio using your preferred
-        AI voice provider. Self-host for privacy or use our cloud solution -
-        you're in control.
-      </p>
-      <div class="flex justify-center gap-4">
-        <Button
-          size="lg"
-          @click="
-            $el
-              .querySelector('#waitlist-form')
-              .scrollIntoView({ behavior: 'smooth' })
-          ">
-          Join Waitlist
-          <LucideArrowRight class="ml-2 h-4 w-4" />
-        </Button>
-        <a
-          href="https://github.com/alexander-gekov/open-reader"
-          target="_blank"
-          rel="noopener">
-          <Button size="lg" variant="outline">
-            <LucideGithub class="mr-2 h-4 w-4" />
-            Star on GitHub
-          </Button>
-        </a>
-      </div>
-    </div>
-
-    <!-- Features Section -->
-    <div class="grid md:grid-cols-3 gap-8">
+  <div class="container mx-auto">
+    <div v-if="showSettingsWarning" class="p-8">
       <Card>
-        <CardContent class="pt-6">
-          <div class="space-y-2">
-            <h3 class="text-xl font-semibold">Multiple Voice Providers</h3>
-            <p class="text-muted-foreground">
-              Use ElevenLabs, AWS Polly, Cartesia/Sonic, or other providers.
-              Bring your own API key or use our cloud service.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent class="pt-6">
-          <div class="space-y-2">
-            <h3 class="text-xl font-semibold">PDF & eBook Support</h3>
-            <p class="text-muted-foreground">
-              Convert PDFs and eBooks with smart text extraction and formatting
-              preservation.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent class="pt-6">
-          <div class="space-y-2">
-            <h3 class="text-xl font-semibold">Self-Hostable</h3>
-            <p class="text-muted-foreground">
-              Deploy on your own infrastructure for complete privacy and
-              control.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-
-    <!-- Waitlist Section -->
-    <div id="waitlist-form" class="max-w-xl mx-auto text-center space-y-8">
-      <div class="space-y-4">
-        <h2 class="text-3xl font-bold">Get Early Access</h2>
-        <p class="text-muted-foreground">
-          Join the waitlist to be among the first to experience Open Reader and
-          receive:
-        </p>
-        <ul class="text-left space-y-2 mt-4">
-          <li class="flex items-center gap-2">
-            <LucideCheck class="h-4 w-4 text-primary" />
-            <span>Early access to the platform</span>
-          </li>
-          <li class="flex items-center gap-2">
-            <LucideCheck class="h-4 w-4 text-primary" />
-            <span>Special launch pricing</span>
-          </li>
-          <li class="flex items-center gap-2">
-            <LucideCheck class="h-4 w-4 text-primary" />
-            <span>Priority support and feature requests</span>
-          </li>
-        </ul>
-      </div>
-
-      <Card v-if="!isSuccess" class="border-primary/50">
-        <CardContent class="pt-6">
-          <form @submit.prevent="handleSubmit" class="space-y-4">
-            <div class="space-y-2">
-              <Input
-                v-model="email"
-                type="email"
-                placeholder="Enter your email"
-                required />
-            </div>
-            <div class="space-y-2">
-              <Input
-                v-model="name"
-                type="text"
-                placeholder="Your name (optional)" />
-            </div>
-            <Button type="submit" class="w-full" :loading="isSubmitting">
-              Join Waitlist
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      <Card v-else>
-        <CardContent class="pt-6">
-          <div class="flex items-center justify-center gap-2 text-primary">
-            <LucideCheck class="h-5 w-5" />
-            <span class="font-medium">You're on the list!</span>
-          </div>
-          <p class="mt-2 text-muted-foreground">
-            We'll notify you when Open Reader launches. Thank you for your
-            interest!
+        <CardHeader>
+          <CardTitle>TTS Settings Required</CardTitle>
+          <CardDescription>
+            Please configure your Text-to-Speech settings before uploading files
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p class="text-muted-foreground">
+            You need to set up your preferred TTS provider and API key to use
+            this feature.
           </p>
         </CardContent>
+        <CardFooter>
+          <NuxtLink to="/settings">
+            <Button>Configure Settings</Button>
+          </NuxtLink>
+        </CardFooter>
       </Card>
     </div>
 
-    <!-- Footer -->
-    <footer class="border-t pt-8">
-      <div class="flex justify-between items-center">
-        <p class="text-sm text-muted-foreground">
-          © 2025 Open Reader. All rights reserved.
-        </p>
-        <div class="flex items-center gap-4">
-          <a
-            href="https://x.com/AlexanderGekov"
-            target="_blank"
-            rel="noopener"
-            class="text-muted-foreground hover:text-primary transition-colors">
-            <LucideTwitter class="h-5 w-5" />
-          </a>
-          <a
-            href="https://github.com/alexander-gekov"
-            target="_blank"
-            rel="noopener"
-            class="text-muted-foreground hover:text-primary transition-colors">
-            <LucideGithub class="h-5 w-5" />
-          </a>
-        </div>
+    <div v-else-if="!currentDoc" class="space-y-6 p-8 dark:bg-black">
+      <FileUpload
+        v-model="files"
+        class="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800">
+        <FileUploadGrid />
+      </FileUpload>
+
+      <div class="flex justify-end">
+        <Button
+          :disabled="!files.length || isUploading"
+          @click="uploadToR2"
+          :loading="isUploading">
+          <LucideLoader2 v-if="isUploading" class="h-4 w-4 animate-spin" />
+          Upload
+        </Button>
       </div>
-    </footer>
+    </div>
+
+    <div v-else class="space-y-6 p-8">
+      <Card>
+        <CardHeader>
+          <CardTitle>PDF Processed Successfully</CardTitle>
+          <CardDescription>
+            {{ currentDoc.totalChunks }} text chunks ready for audio generation
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent class="space-y-6">
+          <div class="space-y-4">
+            <div class="flex justify-between items-center">
+              <span class="text-sm font-medium text-foreground">Progress</span>
+              <span class="text-sm text-muted-foreground">
+                {{ currentDoc.currentChunk }} / {{ currentDoc.totalChunks }}
+              </span>
+            </div>
+
+            <Progress
+              :model-value="
+                (currentDoc.currentChunk / currentDoc.totalChunks) * 100
+              " />
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex justify-between items-center">
+              <h3 class="font-medium text-foreground">Text Chunks:</h3>
+              <div class="text-sm text-muted-foreground">
+                Total Credits: {{ totalCredits }} (~{{
+                  calculateCost(totalCredits)
+                }}¢)
+              </div>
+            </div>
+            <ScrollArea class="h-[240px]">
+              <div class="space-y-2 pr-4">
+                <div
+                  v-for="(chunk, index) in currentDoc.chunks"
+                  :key="index"
+                  :data-chunk-index="index"
+                  class="p-3 rounded-md border text-sm cursor-pointer hover:bg-primary/5 transition-colors"
+                  :class="[
+                    index === currentDoc.currentChunk
+                      ? 'bg-primary/10 border-primary/20'
+                      : 'bg-muted/50 border-border',
+                  ]"
+                  @click="selectAndPlayChunk(index)">
+                  <span class="font-medium text-xs text-muted-foreground"
+                    >Chunk {{ index + 1 }}:</span
+                  >
+                  <span
+                    class="text-foreground"
+                    :class="{
+                      'text-primary font-medium':
+                        index === currentDoc.currentChunk,
+                    }"
+                    >{{ chunk }}</span
+                  >
+                  <div class="text-xs text-muted-foreground mt-1">
+                    Credits: {{ calculateCredits(chunk) }} (~{{
+                      calculateCost(calculateCredits(chunk))
+                    }}¢)
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </div>
+
+          <!-- Audio Player -->
+          <div v-if="audioPlayer" class="space-y-4">
+            <!-- Time Progress -->
+            <div class="flex justify-between text-sm text-muted-foreground">
+              <span>{{ formatTime(currentTime) }}</span>
+              <span>{{ formatTime(duration) }}</span>
+            </div>
+
+            <!-- Progress Bar -->
+            <div
+              class="w-full h-2 bg-muted rounded-full cursor-pointer"
+              @click="handleProgressClick"
+              ref="progressBarRef">
+              <div
+                class="h-full bg-primary rounded-full transition-all"
+                :style="{ width: `${(currentTime / duration) * 100}%` }" />
+            </div>
+
+            <!-- Playback Controls -->
+            <div class="flex items-center justify-between">
+              <!-- Volume Control -->
+              <div class="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  @click="toggleMute"
+                  class="h-8 w-8">
+                  <LucideVolume2 v-if="volume[0] > 0.5" class="h-4 w-4" />
+                  <LucideVolume1 v-else-if="volume[0] > 0" class="h-4 w-4" />
+                  <LucideVolumeX v-else class="h-4 w-4" />
+                </Button>
+                <Slider
+                  v-model="volume"
+                  :min="0"
+                  :max="1"
+                  :step="0.1"
+                  class="w-24" />
+              </div>
+
+              <!-- Play/Pause -->
+              <div class="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  @click="seek(-10)"
+                  class="h-8 w-8">
+                  <LucideRewind class="h-4 w-4" />
+                </Button>
+
+                <Button variant="default" size="icon" @click="togglePlay">
+                  <LucidePlayCircle
+                    v-if="!isPlaying"
+                    class="h-4 w-4 text-background" />
+                  <LucidePauseCircle v-else class="h-4 w-4" />
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  @click="seek(10)"
+                  class="h-8 w-8">
+                  <LucideFastForward class="h-4 w-4" />
+                </Button>
+              </div>
+
+              <!-- Playback Speed -->
+              <Select v-model="playbackRate">
+                <SelectTrigger class="w-24">
+                  <SelectValue>{{ playbackRate }}x</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0.5">0.5x</SelectItem>
+                  <SelectItem value="0.75">0.75x</SelectItem>
+                  <SelectItem value="1">1x</SelectItem>
+                  <SelectItem value="1.25">1.25x</SelectItem>
+                  <SelectItem value="1.5">1.5x</SelectItem>
+                  <SelectItem value="2">2x</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+
+        <CardFooter class="flex gap-3">
+          <Button @click="startAudioPlayback" :disabled="isPlaying">
+            <LucidePlayCircle
+              v-if="!isPlaying"
+              class="h-4 w-4 text-background" />
+            <LucideLoader2 v-else class="h-4 w-4 animate-spin" />
+            {{ isPlaying ? "Playing..." : "Start Audio Playback" }}
+          </Button>
+          <Button variant="outline" @click="resetUpload">
+            <LucideUploadCloud class="h-4 w-4" />
+            Upload Another PDF
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>
   </div>
 </template>

@@ -29,6 +29,7 @@ import {
 definePageMeta({
   title: "Settings",
   layout: "default",
+  middleware: ["auth"],
 });
 
 import { toast } from "vue-sonner";

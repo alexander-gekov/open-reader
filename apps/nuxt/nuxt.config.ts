@@ -45,4 +45,13 @@ export default defineNuxtConfig({
     { path: "~/components/auth", pathPrefix: true, prefix: "Auth" },
     { path: "~/components/layout", pathPrefix: true, prefix: "Layout" },
   ],
+
+  routeRules: {
+    "/reader": { middleware: ["auth"] },
+    "/settings": { middleware: ["auth"] },
+  },
+
+  app: {
+    middleware: ["auth"],
+  },
 });

@@ -14,14 +14,15 @@
             <div class="w-full flex-1 md:w-auto md:flex-none">
               <!-- Add search or other controls here -->
             </div>
-            <div class="flex items-center">
-              <NuxtLink to="/settings" class="mr-4">
+            <div class="flex items-center gap-2">
+              <NuxtLink to="/settings">
                 <Button variant="ghost" size="icon">
                   <LucideSettings2 class="h-5 w-5" />
                   <span class="sr-only">Settings</span>
                 </Button>
               </NuxtLink>
               <ColorModeSwitch />
+              <UserButton class="ml-2" />
             </div>
           </div>
         </nav>
@@ -33,19 +34,7 @@
     </SignedIn>
 
     <SignedOut>
-      <div class="flex min-h-screen items-center justify-center">
-        <div class="mx-auto w-full max-w-sm space-y-6">
-          <div class="space-y-2 text-center">
-            <h1 class="text-2xl font-semibold tracking-tight">
-              Welcome to Open Reader
-            </h1>
-            <p class="text-sm text-muted-foreground">
-              Please sign in to continue
-            </p>
-          </div>
-          <SignIn />
-        </div>
-      </div>
+      <RedirectToSignIn />
     </SignedOut>
   </div>
 </template>
