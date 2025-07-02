@@ -1,77 +1,76 @@
-# OpenReader
+# Open Reader
 
-<div align="center">
-  <h3>Open Source Alternative to ElevenLabs Reader</h3>
-  <p>Transform any PDF into a natural-sounding audiobook using AI voice technology</p>
-</div>
+A monorepo containing the Open Reader application with both frontend and backend components.
 
-## 🌟 Features
+## Structure
 
-- 📚 **PDF to Audiobook Conversion**: Convert any PDF document into a high-quality audiobook
-- 🎭 **Multiple AI Voices**: Choose from a variety of natural-sounding AI voices
-- 📱 **Responsive Design**: Beautiful and intuitive interface that works on any device
-- 🌓 **Dark Mode**: Easy on the eyes with automatic dark mode support
-- 💾 **Local Processing**: Process your documents locally for enhanced privacy
-- 🔄 **Progress Tracking**: Keep track of your reading progress across documents
-- 📑 **Bookmarking**: Save your spot and continue listening later
+- `apps/nuxt/` - Nuxt.js frontend application
+- `apps/go/` - Go backend application
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- Node.js 18.x or higher
-- pnpm (recommended) or npm
+- [Node.js](https://nodejs.org/) (v18 or higher)
+- [pnpm](https://pnpm.io/) (v8 or higher)
+- [Go](https://golang.org/) (v1.21 or higher)
 
 ### Installation
 
-1. Clone the repository:
+1. Install dependencies for all workspaces:
+   ```bash
+   pnpm install
+   ```
 
-```bash
-git clone https://github.com/yourusername/open-reader.git
-cd open-reader
-```
+### Development
 
-2. Install dependencies:
+- Start the Nuxt frontend:
 
-```bash
-pnpm install
-```
+  ```bash
+  pnpm dev
+  ```
 
-3. Start the development server:
+- Or run it specifically:
 
-```bash
-pnpm dev
-```
+  ```bash
+  pnpm --filter @open-reader/nuxt dev
+  ```
 
-The application will be available at `http://localhost:3000`.
+- Start the Go backend (from the go directory):
+  ```bash
+  cd apps/go
+  go run .
+  ```
 
-## 🤝 Contributing
+### Building
 
-We welcome contributions! Please feel free to submit a Pull Request.
+- Build the Nuxt app:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+  ```bash
+  pnpm build
+  ```
 
-## 📝 License
+- Build the Go app:
+  ```bash
+  pnpm --filter @open-reader/go build
+  ```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Workspace Commands
 
-## 🙏 Acknowledgments
+- Run a command in a specific workspace:
 
-- [ElevenLabs](https://elevenlabs.io) - For inspiration and pushing the boundaries of AI voice technology
-- [Nuxt](https://nuxt.com) - For the amazing framework
-- [Together](https://together.ai) - For the AI inference endpoints
-- The open-source community
+  ```bash
+  pnpm --filter @open-reader/nuxt <command>
+  pnpm --filter @open-reader/go <command>
+  ```
 
-## 📸 Screenshots
+- Install a package in a specific workspace:
 
-_Coming soon_
+  ```bash
+  pnpm --filter @open-reader/nuxt add <package>
+  ```
 
----
-
-<div align="center">
-  <p>Made with ❤️ by <a href="https://github.com/alexander-gekov">Alexander Gekov</a></p>
-</div>
+- Run a command in all workspaces:
+  ```bash
+  pnpm -r <command>
+  ```
