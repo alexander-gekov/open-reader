@@ -11,6 +11,13 @@ import (
 	"path"
 	"sync"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/polly"
+	htgotts "github.com/hegedustibor/htgo-tts"
+	"github.com/hegedustibor/htgo-tts/voices"
 )
 
 // GetGoogleTTSURL generates a URL for Google TTS service
@@ -34,22 +41,9 @@ type ElevenLabsProvider struct {
 	apiKey string
 }
 
-// TogetherProvider implements TTSProvider for Together AI
-type TogetherProvider struct {
-	apiKey string
-}
-
-// ReplicateProvider implements TTSProvider for Replicate
-type ReplicateProvider struct {
-	apiKey string
-}
-
-type ReplicateResponse struct {
-	ID      string `json:"id"`
-	Output  string `json:"output"`
-	Status  string `json:"status"`
-	Error   string `json:"error"`
-	Version string `json:"version"`
+// PollyProvider implements TTSProvider using Amazon Polly
+type PollyProvider struct {
+	client *polly.Polly
 }
 
 // CartesiaTTSProvider implements TTSProvider using Cartesia's API
@@ -61,6 +55,11 @@ type CartesiaTTSProvider struct {
 	mutex sync.Mutex
 }
 
+// HTGoTTSProvider implements TTSProvider using htgo-tts
+type HTGoTTSProvider struct {
+	folder string
+}
+
 // NewCartesiaTTSProvider creates a new CartesiaTTSProvider instance
 func NewCartesiaTTSProvider(folder string, apiKey string) *CartesiaTTSProvider {
 	return &CartesiaTTSProvider{
@@ -70,25 +69,33 @@ func NewCartesiaTTSProvider(folder string, apiKey string) *CartesiaTTSProvider {
 	}
 }
 
+// NewHTGoTTSProvider creates a new HTGoTTSProvider instance
+func NewHTGoTTSProvider(folder string) *HTGoTTSProvider {
+	return &HTGoTTSProvider{
+		folder: folder,
+	}
+}
+
 // NewTTSProvider creates a new TTS provider based on the provider name
 func NewTTSProvider(provider string, apiKey string) TTSProvider {
+	// Create AWS session with custom credentials provider
+	creds := credentials.NewStaticCredentials(
+		os.Getenv("AWS_ACCESS_KEY"),
+		os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		"", // Token can be empty for regular API keys
+	)
+	// Use eu-central-1 as default region, can still be overridden by AWS_REGION env var
+	sess := session.Must(session.NewSession(&aws.Config{
+		Region:      aws.String("eu-central-1"),
+		Credentials: creds,
+	}))
+
 	switch provider {
 	case "elevenlabs":
 		return &ElevenLabsProvider{apiKey: apiKey}
-	case "together":
-		return &TogetherProvider{apiKey: apiKey}
-	case "replicate":
-		return &ReplicateProvider{apiKey: apiKey}
-	case "fallback":
-		return &HTGoTTSProvider{folder: "uploads/audio"}
-	case "cartesia":
-		return NewCartesiaTTSProvider("uploads/audio", apiKey)
 	default:
-		// If no API key is provided, use the fallback provider
-		if apiKey == "" {
-			return &HTGoTTSProvider{folder: "uploads/audio"}
-		}
-		return &ElevenLabsProvider{apiKey: apiKey}
+		// Use Polly as the fallback provider
+		return &PollyProvider{client: polly.New(sess)}
 	}
 }
 
@@ -137,204 +144,43 @@ func (p *ElevenLabsProvider) GenerateAudio(text string, options map[string]strin
 	return io.ReadAll(resp.Body)
 }
 
-// GenerateAudio generates audio using Together AI API
-func (p *TogetherProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
-	model := options["model"]
-	if model == "" {
-		model = "Cartesia/Sonic"
-	}
-	voice := options["voice"]
-	if voice == "" {
-		voice = "default"
+func (p *PollyProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
+	// Configure Polly input with Joanna voice
+	input := &polly.SynthesizeSpeechInput{
+		OutputFormat: aws.String("mp3"),
+		Text:         aws.String(text),
+		VoiceId:     aws.String("Joanna"), // Female, US English
+		Engine:      aws.String("neural"),  // Use neural engine for better quality
 	}
 
-	reqBody := map[string]interface{}{
-		"text":  text,
-		"voice": voice,
+	// Override voice if specified in options
+	if voice, ok := options["voice"]; ok && voice != "" {
+		input.VoiceId = aws.String(voice)
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	// Generate speech
+	output, err := p.client.SynthesizeSpeech(input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %v", err)
+		return nil, fmt.Errorf("failed to synthesize speech: %v", err)
 	}
+	defer output.AudioStream.Close()
 
-	url := fmt.Sprintf("https://api.together.xyz/inference/%s", model)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	// Read the entire audio stream
+	audioData, err := io.ReadAll(output.AudioStream)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
+		return nil, fmt.Errorf("failed to read audio stream: %v", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	// Save to file if filename is provided
+	if filename, ok := options["filename"]; ok && filename != "" {
+		chunkStr := options["chunk"]
+		audioFileName := fmt.Sprintf("%s_chunk_%s.mp3", filename, chunkStr)
+		audioPath := path.Join("uploads", "audio", audioFileName)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("together api error: %s", string(body))
-	}
-
-	return io.ReadAll(resp.Body)
-}
-
-// GenerateAudio generates audio using Replicate API
-func (p *ReplicateProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
-	model := options["model"]
-	if model == "" {
-		model = "jaaari/kokoro-82m"
-	}
-	voice := options["voice"]
-	if voice == "" {
-		voice = "af_bella"
-	}
-
-	reqBody := map[string]interface{}{
-		"version": "f559560eb822dc509045f3921a1921234918b91739db4bf3daab2169b71c7a13",
-		"input": map[string]interface{}{
-			"text":  text,
-			"voice": voice,
-		},
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %v", err)
-	}
-
-	url := "https://api.replicate.com/v1/predictions"
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
-	}
-
-	req.Header.Set("Authorization", "Token "+p.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("replicate api error: %s", string(body))
-	}
-
-	var result ReplicateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %v", err)
-	}
-
-	// Poll until the prediction is complete
-	for result.Status == "processing" {
-		time.Sleep(1 * time.Second)
-
-		req, err = http.NewRequest("GET", fmt.Sprintf("https://api.replicate.com/v1/predictions/%s", result.ID), nil)
+		err = os.WriteFile(audioPath, audioData, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create status request: %v", err)
+			return nil, fmt.Errorf("failed to save audio file: %v", err)
 		}
-
-		req.Header.Set("Authorization", "Token "+p.apiKey)
-		resp, err = client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check status: %v", err)
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode status response: %v", err)
-		}
-		resp.Body.Close()
-	}
-
-	if result.Error != "" {
-		return nil, fmt.Errorf("replicate error: %s", result.Error)
-	}
-
-	if result.Output == "" {
-		return nil, fmt.Errorf("no output URL in response")
-	}
-
-	// Download the audio file from the output URL
-	req, err = http.NewRequest("GET", result.Output, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create download request: %v", err)
-	}
-
-	resp, err = client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download audio: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download audio, status: %d", resp.StatusCode)
-	}
-
-	return io.ReadAll(resp.Body)
-}
-
-// HTGoTTSProvider implements TTSProvider using Google TTS
-type HTGoTTSProvider struct {
-	folder string
-}
-
-// NewHTGoTTSProvider creates a new HTGoTTSProvider instance
-func NewHTGoTTSProvider(folder string) *HTGoTTSProvider {
-	return &HTGoTTSProvider{
-		folder: folder,
-	}
-}
-
-func (p *HTGoTTSProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
-	// Ensure the audio folder exists
-	if err := os.MkdirAll(p.folder, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create audio folder: %v", err)
-	}
-
-	// Get the filename and chunk number from options
-	filename := options["filename"]
-	if filename == "" {
-		return nil, fmt.Errorf("filename is required in options")
-	}
-	chunkStr := options["chunk"]
-	if chunkStr == "" {
-		return nil, fmt.Errorf("chunk number is required in options")
-	}
-
-	// Create the audio filename with PDF name and chunk number
-	audioFilename := fmt.Sprintf("%s_chunk_%s.mp3", filename, chunkStr)
-	audioPath := path.Join(p.folder, audioFilename)
-
-	// Get the TTS URL from Google
-	url := GetGoogleTTSURL(text, "en")
-
-	// Download the audio file
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download audio: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download audio, status: %d", resp.StatusCode)
-	}
-
-	// Save the audio file
-	audioData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read audio data: %v", err)
-	}
-
-	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
-		return nil, fmt.Errorf("failed to save audio file: %v", err)
 	}
 
 	return audioData, nil
@@ -437,6 +283,41 @@ func (p *CartesiaTTSProvider) GenerateAudio(text string, options map[string]stri
 	// Save the audio file
 	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
 		return nil, fmt.Errorf("failed to save audio file: %v", err)
+	}
+
+	return audioData, nil
+}
+
+func (p *HTGoTTSProvider) GenerateAudio(text string, options map[string]string) ([]byte, error) {
+	// Get the filename and chunk number from options
+	filename := options["filename"]
+	if filename == "" {
+		return nil, fmt.Errorf("filename is required in options")
+	}
+	chunkStr := options["chunk"]
+	if chunkStr == "" {
+		return nil, fmt.Errorf("chunk is required in options")
+	}
+
+	// Create a unique filename for this chunk
+	outputFile := fmt.Sprintf("%s_chunk_%s.mp3", filename, chunkStr)
+	outputPath := path.Join(p.folder, outputFile)
+
+	// Initialize htgo-tts
+	speech := htgotts.Speech{
+		Folder:   p.folder,
+		Language: voices.English,
+	}
+
+	// Generate the audio file
+	if err := speech.Speak(text); err != nil {
+		return nil, fmt.Errorf("failed to generate speech: %v", err)
+	}
+
+	// Read the generated file
+	audioData, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read generated audio file: %v", err)
 	}
 
 	return audioData, nil

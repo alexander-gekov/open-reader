@@ -719,7 +719,7 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
                   size="icon"
                   @click="seek(10)"
                   class="h-8 w-8">
-                  <LucideFastForward class="mr-2 h-4 w-4" />
+                  <LucideFastForward class="h-4 w-4" />
                 </Button>
               </div>
 

@@ -250,22 +250,43 @@ func extractTextFromPDF(filepath string) (string, error) {
 		}
 		
 		// Clean up the text
-		// Replace multiple spaces with a single space
-		content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
-		// Add space after period if missing
-		content = regexp.MustCompile(`\.(\S)`).ReplaceAllString(content, ". $1")
-		// Add space after comma if missing
-		content = regexp.MustCompile(`,(\S)`).ReplaceAllString(content, ", $1")
-		// Add space after colon if missing
-		content = regexp.MustCompile(`\:(\S)`).ReplaceAllString(content, ": $1")
-		// Add space after semicolon if missing
-		content = regexp.MustCompile(`\;(\S)`).ReplaceAllString(content, "; $1")
-		// Fix spaces around parentheses
-		content = regexp.MustCompile(`\s*\(\s*`).ReplaceAllString(content, " (")
-		content = regexp.MustCompile(`\s*\)\s*`).ReplaceAllString(content, ") ")
-		// Fix spaces around brackets
-		content = regexp.MustCompile(`\s*\[\s*`).ReplaceAllString(content, " [")
-		content = regexp.MustCompile(`\s*\]\s*`).ReplaceAllString(content, "] ")
+		// // First, handle cases where words are incorrectly joined
+		// // Look for patterns of lowercase followed by uppercase and add a space
+		// content = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(content, "$1 $2")
+		
+		// // Look for patterns of letter followed by number or vice versa and add a space
+		// content = regexp.MustCompile(`([a-zA-Z])(\d)`).ReplaceAllString(content, "$1 $2")
+		// content = regexp.MustCompile(`(\d)([a-zA-Z])`).ReplaceAllString(content, "$1 $2")
+		
+		// // Replace multiple spaces with a single space
+		// content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+		
+		// // Add space after period if missing
+		// content = regexp.MustCompile(`\.(\S)`).ReplaceAllString(content, ". $1")
+		
+		// // Add space after comma if missing
+		// content = regexp.MustCompile(`,(\S)`).ReplaceAllString(content, ", $1")
+		
+		// // Add space after colon if missing
+		// content = regexp.MustCompile(`\:(\S)`).ReplaceAllString(content, ": $1")
+		
+		// // Add space after semicolon if missing
+		// content = regexp.MustCompile(`\;(\S)`).ReplaceAllString(content, "; $1")
+		
+		// // Fix spaces around parentheses
+		// content = regexp.MustCompile(`\s*\(\s*`).ReplaceAllString(content, " (")
+		// content = regexp.MustCompile(`\s*\)\s*`).ReplaceAllString(content, ") ")
+		
+		// // Fix spaces around brackets
+		// content = regexp.MustCompile(`\s*\[\s*`).ReplaceAllString(content, " [")
+		// content = regexp.MustCompile(`\s*\]\s*`).ReplaceAllString(content, "] ")
+		
+		// // Fix spaces around special characters
+		// content = regexp.MustCompile(`([a-zA-Z])([.,!?;:])`).ReplaceAllString(content, "$1$2 ")
+		
+		// // Fix spaces around quotes
+		// content = regexp.MustCompile(`"(\S)`).ReplaceAllString(content, `" $1`)
+		// content = regexp.MustCompile(`(\S)"`).ReplaceAllString(content, `$1 "`)
 		
 		text.WriteString(content)
 		text.WriteString("\n") // Add newline between pages
@@ -469,11 +490,20 @@ func getAudioStatusHandler(c *gin.Context) {
 	processor.mutex.RLock()
 	defer processor.mutex.RUnlock()
 
+	// First check if the chunk index is valid
+	if chunkIndex < 0 || chunkIndex >= len(processor.chunks) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status": "error",
+			"error":  "Chunk index out of bounds",
+		})
+		return
+	}
+
 	// Check if we have an audio file for this chunk
-	audioPath, exists := processor.audioFiles[chunkIndex]
+	audioFilename, exists := processor.audioFiles[chunkIndex]
 	if exists {
 		// Return the full URL path
-		fullURL := fmt.Sprintf("http://localhost:8080/static/audio/%s", path.Base(audioPath))
+		fullURL := fmt.Sprintf("http://localhost:8080/static/audio/%s", audioFilename)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ready",
 			"url":       fullURL,
@@ -491,9 +521,9 @@ func getAudioStatusHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{
-		"status": "error",
-		"error":  "Audio not found",
+	// If we get here, the chunk exists but hasn't started processing yet
+	c.JSON(http.StatusOK, gin.H{
+		"status": "pending",
 	})
 }
 
@@ -602,7 +632,7 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 	
 	if _, err := os.Stat(expectedFilePath); err == nil {
 		// File exists, reuse it
-		cp.audioFiles[index] = expectedFilePath
+		cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
 		delete(cp.processing, index)
 		cp.mutex.Unlock()
 		return
@@ -610,22 +640,24 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 
 	// Mark this chunk as being processed
 	cp.processing[index] = true
+	text := cp.chunks[index]
+	settings := cp.settings
 	cp.mutex.Unlock()
 
-	text := cp.chunks[index]
 	options := map[string]string{
-		"model": cp.settings.Model,
-		"voice": cp.settings.Voice,
+		"model": settings.Model,
+		"voice": settings.Voice,
 		"filename": cp.filename,
 		"chunk": fmt.Sprintf("%d", index),
 	}
 
-	audioData, err := generateAudio(text, cp.settings, options)
+	audioData, err := generateAudio(text, settings, options)
 	if err != nil {
 		cp.mutex.Lock()
 		cp.lastError = err.Error()
 		delete(cp.processing, index)
 		cp.mutex.Unlock()
+		log.Printf("Error generating audio for chunk %d: %v", index, err)
 		return
 	}
 
@@ -636,13 +668,15 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 		cp.lastError = fmt.Sprintf("failed to save audio file: %v", err)
 		delete(cp.processing, index)
 		cp.mutex.Unlock()
+		log.Printf("Error saving audio file for chunk %d: %v", index, err)
 		return
 	}
 
 	cp.mutex.Lock()
-	cp.audioFiles[index] = audioPath
+	cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
 	delete(cp.processing, index)
 	cp.mutex.Unlock()
+	log.Printf("Successfully generated audio for chunk %d", index)
 }
 
 func (cp *ChunkProcessor) callElevenLabsTTS(text string) ([]byte, error) {
@@ -701,6 +735,14 @@ func startNextChunkHandler(c *gin.Context) {
 		return
 	}
 
+	// Validate chunk index
+	if currentChunk < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Chunk index cannot be negative",
+		})
+		return
+	}
+
 	processor.mutex.Lock()
 	nextChunk := currentChunk + 1
 	if nextChunk >= len(processor.chunks) {
@@ -727,12 +769,15 @@ func startNextChunkHandler(c *gin.Context) {
 		return
 	}
 
-	// Start processing current chunk if needed and next chunk
 	processor.mutex.Unlock()
+
+	// Start processing in a goroutine
 	go func() {
 		// First check if we need to generate the current chunk
-		if _, exists := processor.audioFiles[currentChunk]; !exists && !processor.processing[currentChunk] {
-			processor.generateTTS(currentChunk)
+		if currentChunk >= 0 && currentChunk < len(processor.chunks) {
+			if _, exists := processor.audioFiles[currentChunk]; !exists && !processor.processing[currentChunk] {
+				processor.generateTTS(currentChunk)
+			}
 		}
 		// Then generate the next chunk
 		processor.generateTTS(nextChunk)
