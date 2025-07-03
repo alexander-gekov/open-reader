@@ -493,6 +493,7 @@ const handleFileUpload = async (file: File) => {
     alert(errorMessage);
   } finally {
     isUploading.value = false;
+    await refreshPdfs();
   }
 };
 
