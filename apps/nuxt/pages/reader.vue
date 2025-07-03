@@ -859,10 +859,10 @@ const closeAudioPlayer = () => {
               </CardContent>
             </Card>
           </div>
-          <div v-else class="py-8 text-center">
+          <div v-else class="pb-8 pt-4 text-center">
             <Card class="max-w-6xl mx-auto">
               <CardContent class="pt-6">
-                <div class="flex flex-col items-center space-y-4">
+                <div class="flex flex-col items-center space-y-4 py-12">
                   <div class="p-4 rounded-full bg-muted">
                     <LucideFileText class="w-8 h-8 text-muted-foreground" />
                   </div>
