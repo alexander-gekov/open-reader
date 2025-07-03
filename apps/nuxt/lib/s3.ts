@@ -1,12 +1,11 @@
 import { S3Client } from "@aws-sdk/client-s3";
 
-const config = useRuntimeConfig();
-
-export const s3 = new S3Client({
-  region: "auto",
-  endpoint: `https://${config.r2AccountId}.r2.cloudflarestorage.com`,
+export const s3Client = new S3Client({
+  region: process.env.AWS_REGION || "us-east-1",
   credentials: {
-    accessKeyId: config.r2AccessKeyId,
-    secretAccessKey: config.r2SecretAccessKey,
+    accessKeyId: process.env.AWS_ACCESS_KEY || "",
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
   },
 });
+
+export const getBucketName = () => process.env.AWS_BUCKET_NAME || "open-reader";

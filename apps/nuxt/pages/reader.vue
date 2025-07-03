@@ -23,6 +23,9 @@ import {
   LucideVolume1,
   LucideVolume2,
   LucideVolumeX,
+  LucideFileText,
+  LucideTrash2,
+  LucideImage,
 } from "lucide-vue-next";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -54,6 +57,18 @@ interface CurrentDoc {
   currentChunk: number;
 }
 
+interface PDF {
+  id: string;
+  title: string;
+  userId: string;
+  url: string;
+  coverUrl: string | null;
+  totalPages: number;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface AudioResponse {
   waiting?: boolean;
   message?: string;
@@ -78,6 +93,9 @@ const progressBarRef = ref<HTMLElement>();
 const previousVolume = ref([1]);
 const error = ref<string | null>(null);
 const isPreloading = ref(false);
+
+// Fetch PDFs from the library
+const { data: pdfs, refresh: refreshPdfs } = await useFetch<PDF[]>("/api/pdfs");
 
 type TTSProvider = {
   provider: string;
@@ -556,6 +574,76 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
   isPlaying.value = true;
   await playNextChunk();
 };
+
+const handlePdfSelect = async (pdf: PDF) => {
+  try {
+    // Reset current state
+    resetUpload();
+    isUploading.value = true;
+
+    // Fetch the PDF file from the URL
+    const response = await fetch(pdf.url);
+    const blob = await response.blob();
+    const file = new File([blob], pdf.title, { type: "application/pdf" });
+
+    // Process the PDF
+    await handleFileUpload(file);
+  } catch (error) {
+    console.error("Error loading PDF:", error);
+    alert("Failed to load the PDF");
+  } finally {
+    isUploading.value = false;
+  }
+};
+
+const handlePdfDelete = async (pdf: PDF) => {
+  try {
+    await $fetch(`/api/pdfs/${pdf.id}`, {
+      method: "DELETE",
+    });
+    await refreshPdfs();
+  } catch (error) {
+    console.error("Error deleting PDF:", error);
+    alert("Failed to delete the PDF");
+  }
+};
+
+const handleCoverUpload = async (event: Event, pdf: PDF) => {
+  const input = event.target as HTMLInputElement;
+  if (!input.files?.length) return;
+
+  const file = input.files[0];
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const { bucketName } = useRuntimeConfig().public;
+    await $fetch(`/api/pdfs/${pdf.id}/cover`, {
+      method: "POST",
+      body: formData,
+    });
+    await refreshPdfs();
+  } catch (error) {
+    console.error("Error uploading cover:", error);
+    alert("Failed to upload cover image");
+  }
+};
+
+const triggerCoverUpload = (pdfId: string) => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.onchange = (e) => {
+    const target = e.target as HTMLInputElement;
+    if (target.files?.length) {
+      const pdf = pdfs.value?.find((p) => p.id === pdfId);
+      if (pdf) {
+        handleCoverUpload(e, pdf);
+      }
+    }
+  };
+  input.click();
+};
 </script>
 
 <template>
@@ -764,6 +852,84 @@ const selectAndPlayChunk = async (chunkIndex: number) => {
           </Button>
         </CardFooter>
       </Card>
+    </div>
+
+    <!-- Library Section -->
+    <div class="mt-12 space-y-6">
+      <h2 class="text-2xl font-semibold tracking-tight">Library</h2>
+
+      <div class="relative">
+        <ScrollArea class="w-full whitespace-nowrap rounded-xl">
+          <div v-if="pdfs && pdfs.length > 0" class="flex w-max space-x-4 p-4">
+            <Card
+              v-for="pdf in pdfs"
+              :key="pdf.id"
+              class="w-[250px] group hover:bg-accent transition-colors cursor-pointer relative"
+              @click="handlePdfSelect(pdf)">
+              <Button
+                variant="destructive"
+                size="icon"
+                class="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                @click.stop="handlePdfDelete(pdf)">
+                <LucideTrash2 class="h-4 w-4" />
+              </Button>
+              <CardContent class="p-4">
+                <div
+                  class="aspect-[3/4] relative rounded-lg overflow-hidden mb-4">
+                  <img
+                    v-if="pdf.coverUrl"
+                    :src="pdf.coverUrl"
+                    :alt="pdf.title"
+                    class="object-cover w-full h-full" />
+                  <div
+                    v-else
+                    class="w-full h-full bg-muted flex items-center justify-center">
+                    <LucideFileText class="w-12 h-12 text-muted-foreground" />
+                  </div>
+                  <div
+                    class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50"
+                    @click.stop>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      @click.stop="triggerCoverUpload(pdf.id)">
+                      <LucideImage class="h-4 w-4 mr-2" />
+                      {{ pdf.coverUrl ? "Change Cover" : "Add Cover" }}
+                    </Button>
+                  </div>
+                </div>
+                <h3 class="font-medium truncate">{{ pdf.title }}</h3>
+                <p class="text-sm text-muted-foreground">
+                  {{ new Date(pdf.createdAt).toLocaleDateString() }}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+          <div v-else class="py-8 text-center">
+            <Card class="max-w-6xl mx-auto">
+              <CardContent class="pt-6">
+                <div class="flex flex-col items-center space-y-4">
+                  <div class="p-4 rounded-full bg-muted">
+                    <LucideFileText class="w-8 h-8 text-muted-foreground" />
+                  </div>
+                  <h3 class="text-lg font-semibold">No PDFs in your library</h3>
+                  <p class="text-sm text-muted-foreground">
+                    Upload your first PDF to get started with text-to-speech
+                    conversion
+                  </p>
+                  <Button
+                    v-if="currentDoc"
+                    variant="outline"
+                    @click="resetUpload">
+                    <LucideUploadCloud class="h-4 w-4 mr-2" />
+                    Upload a PDF
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </ScrollArea>
+      </div>
     </div>
   </div>
 </template>

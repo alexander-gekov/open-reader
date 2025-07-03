@@ -29,3 +29,17 @@ model WaitlistEntry {
   name      String?
   createdAt DateTime @default(now())
 }
+
+model PDF {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  url         String
+  coverUrl    String?
+  totalPages  Int
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("pdfs")
+}

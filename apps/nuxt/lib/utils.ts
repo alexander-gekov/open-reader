@@ -46,3 +46,7 @@ export async function storeTextChunks(docId: string, chunks: string[]) {
 
   return chunks.length;
 }
+
+export const getGoBackendUrl = () => {
+  return process.env.GO_BACKEND_URL || "http://localhost:8080";
+};

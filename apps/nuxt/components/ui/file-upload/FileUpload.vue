@@ -49,13 +49,22 @@
                   class="max-w-xs truncate text-base text-neutral-700 dark:text-neutral-300">
                   {{ file.name }}
                 </Motion>
-                <Motion
-                  as="p"
-                  :initial="{ opacity: 0 }"
-                  :animate="{ opacity: 1 }"
-                  class="w-fit shrink-0 rounded-lg px-2 py-1 text-sm text-neutral-600 shadow-input dark:bg-neutral-800 dark:text-white">
-                  {{ (file.size / (1024 * 1024)).toFixed(2) }} MB
-                </Motion>
+                <div class="flex items-center gap-2">
+                  <Motion
+                    as="p"
+                    :initial="{ opacity: 0 }"
+                    :animate="{ opacity: 1 }"
+                    class="w-fit shrink-0 rounded-lg px-2 py-1 text-sm text-neutral-600 shadow-input dark:bg-neutral-800 dark:text-white">
+                    {{ (file.size / (1024 * 1024)).toFixed(2) }} MB
+                  </Motion>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    class="h-8 w-8 text-muted-foreground"
+                    @click.stop="clearFile(idx)">
+                    <LucideX class="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
 
               <div
@@ -123,7 +132,8 @@ import type { HTMLAttributes } from "vue";
 import { cn } from "@/lib/utils";
 import { Motion } from "motion-v";
 import { ref } from "vue";
-import { LucideUpload } from "lucide-vue-next";
+import { LucideUpload, LucideX } from "lucide-vue-next";
+import { Button } from "@/components/ui/button";
 
 interface FileUploadProps {
   class?: HTMLAttributes["class"];
@@ -168,6 +178,11 @@ function handleDrop(e: DragEvent) {
     ? Array.from(e.dataTransfer.files)
     : [];
   if (droppedFiles.length) handleFileChange(droppedFiles);
+}
+
+function clearFile(index: number) {
+  files.value = files.value.filter((_, i) => i !== index);
+  emit("update:modelValue", files.value);
 }
 </script>
 
