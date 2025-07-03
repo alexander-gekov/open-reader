@@ -93,6 +93,10 @@ const progressBarRef = ref<HTMLElement>();
 const previousVolume = ref([1]);
 const error = ref<string | null>(null);
 const isPreloading = ref(false);
+const isLoading = ref(false);
+const showAudioPlayer = computed(() => {
+  return audioPlayer.value !== null;
+});
 
 // Fetch PDFs from the library
 const { data: pdfs, refresh: refreshPdfs } = await useFetch<PDF[]>("/api/pdfs");
@@ -158,12 +162,17 @@ const handleProgressClick = (event: MouseEvent) => {
 const togglePlay = async () => {
   if (!audioPlayer.value) return;
 
-  if (isPlaying.value) {
-    audioPlayer.value.pause();
-    isPlaying.value = false;
-  } else {
-    isPlaying.value = true;
-    await playNextChunk();
+  isLoading.value = true;
+  try {
+    if (isPlaying.value) {
+      audioPlayer.value.pause();
+      isPlaying.value = false;
+    } else {
+      isPlaying.value = true;
+      await playNextChunk();
+    }
+  } finally {
+    isLoading.value = false;
   }
 };
 
@@ -312,17 +321,27 @@ const setupAudioPlayer = () => {
 
   audioPlayer.value.addEventListener("playing", () => {
     isPlaying.value = true;
-    // Start processing the next chunk immediately when current starts playing
+    // Start processing the next two chunks immediately when current starts playing
     if (
       currentDoc.value &&
       currentDoc.value.currentChunk < currentDoc.value.totalChunks - 1
     ) {
-      console.log("Triggering next chunk processing");
+      console.log("Triggering next chunks processing");
+      // Process next chunk
       $fetch(`/api/audio/start-next/${currentDoc.value.currentChunk}`).catch(
         (err) => {
           console.error("Failed to trigger next chunk processing:", err);
         }
       );
+
+      // Process chunk after next if available
+      if (currentDoc.value.currentChunk < currentDoc.value.totalChunks - 2) {
+        $fetch(
+          `/api/audio/start-next/${currentDoc.value.currentChunk + 1}`
+        ).catch((err) => {
+          console.error("Failed to trigger chunk+2 processing:", err);
+        });
+      }
     }
   });
 
@@ -645,6 +664,22 @@ const triggerCoverUpload = (pdfId: string) => {
   };
   input.click();
 };
+
+const handleVolumeChange = (newVolume: number[]) => {
+  volume.value = newVolume;
+};
+
+const handlePlaybackRateChange = (newRate: number) => {
+  playbackRate.value = newRate;
+};
+
+const handleSeek = (seconds: number) => {
+  seek(seconds);
+};
+
+const closeAudioPlayer = () => {
+  stopPlayback();
+};
 </script>
 
 <template>
@@ -755,88 +790,6 @@ const triggerCoverUpload = (pdfId: string) => {
               </div>
             </ScrollArea>
           </div>
-
-          <!-- Audio Player -->
-          <div v-if="audioPlayer" class="space-y-4">
-            <!-- Time Progress -->
-            <div class="flex justify-between text-sm text-muted-foreground">
-              <span>{{ formatTime(currentTime) }}</span>
-              <span>{{ formatTime(duration) }}</span>
-            </div>
-
-            <!-- Progress Bar -->
-            <div
-              class="w-full h-2 bg-muted rounded-full cursor-pointer"
-              @click="handleProgressClick"
-              ref="progressBarRef">
-              <div
-                class="h-full bg-primary rounded-full transition-all"
-                :style="{ width: `${(currentTime / duration) * 100}%` }" />
-            </div>
-
-            <!-- Playback Controls -->
-            <div class="flex items-center justify-between">
-              <!-- Volume Control -->
-              <div class="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  @click="toggleMute"
-                  class="h-8 w-8">
-                  <LucideVolume2 v-if="volume[0] > 0.5" class="h-4 w-4" />
-                  <LucideVolume1 v-else-if="volume[0] > 0" class="h-4 w-4" />
-                  <LucideVolumeX v-else class="h-4 w-4" />
-                </Button>
-                <Slider
-                  v-model="volume"
-                  :min="0"
-                  :max="1"
-                  :step="0.1"
-                  class="w-24" />
-              </div>
-
-              <!-- Play/Pause -->
-              <div class="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  @click="seek(-10)"
-                  class="h-8 w-8">
-                  <LucideRewind class="h-4 w-4" />
-                </Button>
-
-                <Button variant="default" size="icon" @click="togglePlay">
-                  <LucidePlayCircle
-                    v-if="!isPlaying"
-                    class="h-4 w-4 text-background" />
-                  <LucidePauseCircle v-else class="h-4 w-4" />
-                </Button>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  @click="seek(10)"
-                  class="h-8 w-8">
-                  <LucideFastForward class="h-4 w-4" />
-                </Button>
-              </div>
-
-              <!-- Playback Speed -->
-              <Select v-model="playbackRate">
-                <SelectTrigger class="w-24">
-                  <SelectValue>{{ playbackRate }}x</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0.5">0.5x</SelectItem>
-                  <SelectItem value="0.75">0.75x</SelectItem>
-                  <SelectItem value="1">1x</SelectItem>
-                  <SelectItem value="1.25">1.25x</SelectItem>
-                  <SelectItem value="1.5">1.5x</SelectItem>
-                  <SelectItem value="2">2x</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
         </CardContent>
 
         <CardFooter class="flex gap-3">
@@ -856,16 +809,16 @@ const triggerCoverUpload = (pdfId: string) => {
     </div>
 
     <!-- Library Section -->
-    <div class="mt-12 space-y-6">
+    <div class="mt-12 mb-32 space-y-6">
       <h2 class="text-2xl font-semibold tracking-tight">Library</h2>
 
       <div class="relative">
-        <ScrollArea class="w-full whitespace-nowrap rounded-xl">
-          <div v-if="pdfs && pdfs.length > 0" class="flex w-max space-x-4 p-4">
+        <div class="overflow-x-auto custom-scrollbar">
+          <div v-if="pdfs && pdfs.length > 0" class="flex gap-4 pb-4">
             <Card
               v-for="pdf in pdfs"
               :key="pdf.id"
-              class="w-[250px] group hover:bg-accent transition-colors cursor-pointer relative"
+              class="w-[250px] shrink-0 group hover:bg-accent transition-colors cursor-pointer relative"
               @click="handlePdfSelect(pdf)">
               <Button
                 variant="destructive"
@@ -929,8 +882,42 @@ const triggerCoverUpload = (pdfId: string) => {
               </CardContent>
             </Card>
           </div>
-        </ScrollArea>
+        </div>
       </div>
     </div>
   </div>
+
+  <FloatingAudioPlayer
+    v-if="showAudioPlayer"
+    :volume="volume"
+    :playback-rate="playbackRate"
+    :is-playing="isPlaying"
+    :current-time="currentTime"
+    :duration="duration"
+    :is-loading="isLoading"
+    @update:volume="handleVolumeChange"
+    @update:playback-rate="handlePlaybackRateChange"
+    @toggle-play="togglePlay"
+    @seek="handleSeek"
+    @toggle-mute="toggleMute"
+    @close="closeAudioPlayer" />
 </template>
+
+<style scoped>
+.custom-scrollbar::-webkit-scrollbar {
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #262830;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--foreground) / 0.2);
+  border-radius: 20px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--foreground) / 0.3);
+}
+</style>

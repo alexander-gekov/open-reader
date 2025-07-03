@@ -129,9 +129,16 @@ func main() {
 	// Get API key but don't require it
 	apiKey := os.Getenv("ELEVENLABS_API_KEY")
 
-	// Create audio directory if it doesn't exist
-	if err := os.MkdirAll("./uploads/audio", 0755); err != nil {
-		log.Fatal("Failed to create audio directory:", err)
+	// Create required directories
+	requiredDirs := []string{
+		"./uploads",
+		"./uploads/audio",
+	}
+	
+	for _, dir := range requiredDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Fatalf("Failed to create directory %s: %v", dir, err)
+		}
 	}
 
 	// Initialize the processor
