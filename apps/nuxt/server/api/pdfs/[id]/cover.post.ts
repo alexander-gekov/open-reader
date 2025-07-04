@@ -23,7 +23,7 @@ export default defineEventHandler(async (event) => {
   }
 
   // Check if PDF exists and belongs to user
-  const pdf = await prisma.pDF.findUnique({
+  const pdf = await prisma.pdf.findUnique({
     where: { id },
   });
 
@@ -74,7 +74,7 @@ export default defineEventHandler(async (event) => {
     );
 
     // Update PDF record with new cover URL
-    const updatedPdf = await prisma.pDF.update({
+    const updatedPdf = await prisma.pdf.update({
       where: { id },
       data: {
         coverUrl: `https://${bucketName}.s3.amazonaws.com/${coverKey}`,

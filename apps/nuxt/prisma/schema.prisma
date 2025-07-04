@@ -30,7 +30,7 @@ model WaitlistEntry {
   createdAt DateTime @default(now())
 }
 
-model PDF {
+model pdf {
   id          String   @id @default(cuid())
   userId      String
   title       String
@@ -41,5 +41,23 @@ model PDF {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  chunks      PdfChunk[]
+
   @@map("pdfs")
+}
+
+model PdfChunk {
+  id        String   @id @default(cuid())
+  pdfId     String
+  index     Int
+  text      String
+  audioUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pdf       pdf      @relation(fields: [pdfId], references: [id])
+
+  @@unique([pdfId, index])
+  @@index([pdfId])
+  @@map("pdf_chunks")
 }

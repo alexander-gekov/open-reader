@@ -13,7 +13,7 @@ export default defineEventHandler(async (event) => {
 
   if (event.method === "GET") {
     // List PDFs
-    const pdfs = await prisma.PDF.findMany({
+    const pdfs = await prisma.pdf.findMany({
       where: {
         userId,
         isArchived: false,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,9 +22,23 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/ledongthuc/pdf"
+	"github.com/lucsky/cuid"
 	"github.com/sentencizer/sentencizer"
 )
+
+var db *pgx.Conn
+
+func initDB() error {
+	dbUrl := os.Getenv("DATABASE_URL")
+	if dbUrl == "" {
+		return fmt.Errorf("DATABASE_URL is not set")
+	}
+	var err error
+	db, err = pgx.Connect(context.Background(), dbUrl)
+	return err
+}
 
 func loadEnv() {
 	// Get the directory where the executable is running
@@ -138,6 +153,7 @@ type ChunkProcessor struct {
 	settings    TTSSettings   // Store TTS settings
 	s3Client    *s3.S3       // AWS S3 client
 	bucketName  string       // AWS S3 bucket name
+	chunkIDs    []string     // Store chunk DB IDs from Nuxt
 }
 
 type UploadResponse struct {
@@ -220,6 +236,10 @@ func main() {
 		}
 	}()
 
+	if err := initDB(); err != nil {
+		log.Fatalf("Failed to connect to DB: %v", err)
+	}
+
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
@@ -280,6 +300,34 @@ func main() {
 		c.Header("Content-Length", fmt.Sprintf("%d", len(audioData)))
 		c.Header("Cache-Control", "no-cache")
 		c.Data(http.StatusOK, "audio/mpeg", audioData)
+	})
+	r.POST("/save-chunks", func(c *gin.Context) {
+		var req struct {
+			PdfId  string `json:"pdfId"`
+			Chunks []struct {
+				Text  string `json:"text"`
+				Index int    `json:"index"`
+			} `json:"chunks"`
+		}
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Forward to Nuxt backend (assume http://localhost:3000/api/chunks)
+		nuxtUrl := os.Getenv("NUXT_CHUNKS_URL")
+		if nuxtUrl == "" {
+			nuxtUrl = "http://localhost:3000/api/chunks" // fallback
+		}
+		payload, _ := json.Marshal(req)
+		resp, err := http.Post(nuxtUrl, "application/json", bytes.NewReader(payload))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		c.Data(resp.StatusCode, "application/json", body)
 	})
 
 	port := os.Getenv("PORT")
@@ -516,7 +564,38 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	audioID := processor.ProcessChunks(chunks, cleanFilename, settings)
+	// Read chunkIds from form (sent as a stringified JSON array)
+	chunkIdsStr := c.Request.FormValue("chunkIds")
+	var chunkIDs []string
+	if chunkIdsStr != "" {
+		err := json.Unmarshal([]byte(chunkIdsStr), &chunkIDs)
+		if err != nil {
+			log.Printf("Failed to parse chunkIds: %v", err)
+			// Optionally: return error to client
+		}
+	}
+
+	// Read pdfId from form (sent as a string)
+	pdfId := c.Request.FormValue("pdfId")
+	if pdfId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pdfId is required"})
+		return
+	}
+
+	audioID := processor.ProcessChunksWithIDs(chunks, cleanFilename, settings, chunkIDs)
+
+	for idx, text := range chunks {
+		_, err := db.Exec(context.Background(),
+			`INSERT INTO pdf_chunks (id, pdf_id, index, text, audio_url, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			cuid.New(), pdfId, idx, text, nil, time.Now(), time.Now(),
+		)
+		if err != nil {
+			log.Printf("Failed to insert chunk: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save chunks to DB"})
+			return
+		}
+	}
 
 	c.JSON(http.StatusOK, UploadResponse{
 		Message: "PDF processed successfully",
@@ -913,4 +992,31 @@ func getBucketNames(buckets []*s3.Bucket) []string {
 		}
 	}
 	return names
+}
+
+// Add a new method to ChunkProcessor to accept chunkIDs
+func (cp *ChunkProcessor) ProcessChunksWithIDs(chunks []string, filename string, settings TTSSettings, chunkIDs []string) string {
+	cp.mutex.Lock()
+	cp.chunks = chunks
+	cp.currentIdx = 0
+	cp.audioFiles = make(map[int]string)
+	cp.processing = make(map[int]bool)
+	cp.lastError = ""
+	cp.stopProcess = make(chan bool, 1)
+	cp.filename = filename
+	cp.settings = settings
+	cp.chunkIDs = chunkIDs
+	cp.mutex.Unlock()
+
+	audioID := cp.filename
+
+	// Start processing the first pair of chunks
+	go func() {
+		cp.generateTTS(0)
+		if len(cp.chunks) > 1 {
+			cp.generateTTS(1)
+		}
+	}()
+
+	return audioID
 } 

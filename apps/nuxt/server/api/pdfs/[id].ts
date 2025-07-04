@@ -20,7 +20,7 @@ export default defineEventHandler(async (event) => {
   }
 
   // Check if the PDF exists and belongs to the user
-  const pdf = await prisma.PDF.findFirst({
+  const pdf = await prisma.pdf.findFirst({
     where: {
       id,
       userId,
@@ -41,15 +41,12 @@ export default defineEventHandler(async (event) => {
   if (event.method === "PATCH") {
     const body = await readBody(event);
 
-    const updatedPdf = await prisma.PDF.update({
+    const updatedPdf = await prisma.pdf.update({
       where: { id },
       data: {
         title: body.title,
-        description: body.description,
-        lastReadPage: body.lastReadPage,
-        lastReadAt: body.lastReadPage !== undefined ? new Date() : undefined,
         isArchived: body.isArchived,
-        metadata: body.metadata,
+        ...body,
       },
     });
 
@@ -58,7 +55,7 @@ export default defineEventHandler(async (event) => {
 
   if (event.method === "DELETE") {
     // Instead of actually deleting, we archive the PDF
-    const archivedPdf = await prisma.PDF.update({
+    const archivedPdf = await prisma.pdf.update({
       where: { id },
       data: {
         isArchived: true,

@@ -42,8 +42,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     // Load PDF document to get total pages
-    const pdfDoc = await PDFDocument.load(file.data);
-    const totalPages = pdfDoc.getPageCount();
+    // Remove pdf-lib usage and text extraction
 
     // Generate unique keys for S3
     const timestamp = Date.now();
@@ -61,22 +60,25 @@ export default defineEventHandler(async (event) => {
     );
 
     // Store PDF metadata in the database
-    const pdfRecord = await prisma.pDF.create({
+    const pdfRecord = await prisma.pdf.create({
       data: {
         userId,
         title: file.filename || "Untitled",
         url: `https://${bucketName}.s3.amazonaws.com/${pdfKey}`,
-        totalPages,
+        totalPages: 0, // Will update after Go returns chunk info if needed
         isArchived: false,
       },
     });
 
-    // Process for TTS
+    // Prepare form data for Go backend
     const goBackendFormData = new FormData();
     const blob = new Blob([file.data], {
       type: file.type || "application/pdf",
     });
     goBackendFormData.append("file", blob, file.filename);
+
+    // Add chunkIds as a JSON string (empty for now, or you can pass [] if needed)
+    goBackendFormData.append("chunkIds", JSON.stringify([]));
 
     const headers = event.node.req.headers;
     const ttsHeaders: Record<string, string> = {
@@ -88,18 +90,40 @@ export default defineEventHandler(async (event) => {
 
     // Send to Go backend for processing
     const goBackendUrl = getGoBackendUrl();
-    const response = await $fetch<UploadResponse>(`${goBackendUrl}/upload`, {
+    const response = await $fetch<{
+      message: string;
+      chunks: string[];
+      audio_id: string;
+    }>(`${goBackendUrl}/upload`, {
       method: "POST",
       body: goBackendFormData,
       headers: ttsHeaders,
     });
 
+    // Save real chunks to DB
+    const chunkRecords = await prisma.pdfChunk.createMany({
+      data: response.chunks.map((text, idx) => ({
+        pdfId: pdfRecord.id,
+        index: idx,
+        text,
+        audioUrl: null,
+      })),
+    });
+
+    // Fetch the created chunks to return to the frontend
+    const savedChunks = await prisma.pdfChunk.findMany({
+      where: { pdfId: pdfRecord.id },
+      orderBy: { index: "asc" },
+      select: { id: true, text: true, audioUrl: true, index: true },
+    });
+
     return {
       success: true,
       message: "File uploaded and processed successfully",
-      chunks: response.chunks,
+      pdfId: pdfRecord.id,
+      chunks: savedChunks,
       audioId: response.audio_id,
-      totalChunks: response.chunks.length,
+      totalChunks: savedChunks.length,
     };
   } catch (error: any) {
     console.error("Error processing file:", error);

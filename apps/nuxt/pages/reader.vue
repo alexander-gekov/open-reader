@@ -823,7 +823,7 @@ const closeAudioPlayer = () => {
               <Button
                 variant="destructive"
                 size="icon"
-                class="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                class="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 hover:ring-2 hover:ring-red-500 hover:ring-offset-2"
                 @click.stop="handlePdfDelete(pdf)">
                 <LucideTrash2 class="h-4 w-4" />
               </Button>
@@ -846,6 +846,7 @@ const closeAudioPlayer = () => {
                     <Button
                       variant="secondary"
                       size="sm"
+                      class="focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 hover:ring-2 hover:ring-primary hover:ring-offset-2"
                       @click.stop="triggerCoverUpload(pdf.id)">
                       <LucideImage class="h-4 w-4 mr-2" />
                       {{ pdf.coverUrl ? "Change Cover" : "Add Cover" }}
