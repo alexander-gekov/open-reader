@@ -153,7 +153,8 @@ type ChunkProcessor struct {
 	settings    TTSSettings   // Store TTS settings
 	s3Client    *s3.S3       // AWS S3 client
 	bucketName  string       // AWS S3 bucket name
-	chunkIDs    []string     // Store chunk DB IDs from Nuxt
+	chunkIDs    []string     // Store chunk DB IDs from Nuxt (unused now)
+	pdfId       string       // Store the current pdfId
 }
 
 type UploadResponse struct {
@@ -564,17 +565,6 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	// Read chunkIds from form (sent as a stringified JSON array)
-	chunkIdsStr := c.Request.FormValue("chunkIds")
-	var chunkIDs []string
-	if chunkIdsStr != "" {
-		err := json.Unmarshal([]byte(chunkIdsStr), &chunkIDs)
-		if err != nil {
-			log.Printf("Failed to parse chunkIds: %v", err)
-			// Optionally: return error to client
-		}
-	}
-
 	// Read pdfId from form (sent as a string)
 	pdfId := c.Request.FormValue("pdfId")
 	if pdfId == "" {
@@ -582,7 +572,9 @@ func uploadHandler(c *gin.Context) {
 		return
 	}
 
-	audioID := processor.ProcessChunksWithIDs(chunks, cleanFilename, settings, chunkIDs)
+	processor.pdfId = pdfId
+
+	audioID := processor.ProcessChunks(chunks, cleanFilename, settings)
 
 	for idx, text := range chunks {
 		_, err := db.Exec(context.Background(),
@@ -776,6 +768,7 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 	cp.processing[index] = true
 	text := cp.chunks[index]
 	settings := cp.settings
+	pdfId := cp.pdfId
 	cp.mutex.Unlock()
 
 	options := map[string]string{
@@ -812,6 +805,17 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 	delete(cp.processing, index)
 	cp.mutex.Unlock()
 	log.Printf("Successfully generated and uploaded audio for chunk %d", index)
+
+	// Update the audioUrl in the database for this chunk
+	if db != nil {
+		_, err := db.Exec(context.Background(),
+			`UPDATE pdf_chunks SET audio_url = $1, updated_at = $2 WHERE pdf_id = $3 AND index = $4`,
+			audioURL, time.Now(), pdfId, index,
+		)
+		if err != nil {
+			log.Printf("Failed to update audio_url for chunk %d: %v", index, err)
+		}
+	}
 }
 
 func (cp *ChunkProcessor) callElevenLabsTTS(text string) ([]byte, error) {

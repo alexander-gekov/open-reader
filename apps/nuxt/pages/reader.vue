@@ -751,11 +751,6 @@ const closeAudioPlayer = () => {
           <div class="space-y-2">
             <div class="flex justify-between items-center">
               <h3 class="font-medium text-foreground">Text Chunks:</h3>
-              <div class="text-sm text-muted-foreground">
-                Total Credits: {{ totalCredits }} (~{{
-                  calculateCost(totalCredits)
-                }}¢)
-              </div>
             </div>
             <ScrollArea class="h-[240px]">
               <div class="space-y-2 pr-4">
@@ -781,11 +776,6 @@ const closeAudioPlayer = () => {
                     }"
                     >{{ chunk }}</span
                   >
-                  <div class="text-xs text-muted-foreground mt-1">
-                    Credits: {{ calculateCredits(chunk) }} (~{{
-                      calculateCost(calculateCredits(chunk))
-                    }}¢)
-                  </div>
                 </div>
               </div>
             </ScrollArea>
