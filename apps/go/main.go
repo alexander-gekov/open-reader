@@ -18,7 +18,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/ledongthuc/pdf"
-	"github.com/sentencizer/sentencizer"
+	"github.com/neurosnap/sentences"
 )
 
 func loadEnv() {
@@ -240,147 +240,275 @@ var processor *ChunkProcessor
 func extractTextFromPDF(filepath string) (string, error) {
 	f, r, err := pdf.Open(filepath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to open PDF: %v", err)
 	}
 	defer f.Close()
 
+	totalPages := r.NumPage()
+	log.Printf("Processing PDF with %d pages", totalPages)
+
 	var text strings.Builder
-	for i := 1; i <= r.NumPage(); i++ {
+	var processingErrors []string
+
+	// Pre-allocate builder capacity
+	text.Grow(totalPages * 2000)
+
+	for i := 1; i <= totalPages; i++ {
+		log.Printf("Processing page %d of %d", i, totalPages)
+		
 		p := r.Page(i)
 		if p.V.IsNull() {
+			log.Printf("Skipping null page %d", i)
 			continue
 		}
 
 		content, err := p.GetPlainText(nil)
 		if err != nil {
+			log.Printf("Error extracting text from page %d: %v", i, err)
+			processingErrors = append(processingErrors, fmt.Sprintf("page %d: %v", i, err))
 			continue
 		}
+
+		if content == "" {
+			log.Printf("Warning: Empty content on page %d", i)
+			continue
+		}
+
+		// Fix word spacing issues
+		// 1. Add space between lowercase and uppercase letters (camelCase)
+		content = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(content, "$1 $2")
 		
-		// Clean up the text
-		// // First, handle cases where words are incorrectly joined
-		// // Look for patterns of lowercase followed by uppercase and add a space
-		// content = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(content, "$1 $2")
+		// 2. Add space between letter and number
+		content = regexp.MustCompile(`([a-zA-Z])(\d)`).ReplaceAllString(content, "$1 $2")
+		content = regexp.MustCompile(`(\d)([a-zA-Z])`).ReplaceAllString(content, "$1 $2")
 		
-		// // Look for patterns of letter followed by number or vice versa and add a space
-		// content = regexp.MustCompile(`([a-zA-Z])(\d)`).ReplaceAllString(content, "$1 $2")
-		// content = regexp.MustCompile(`(\d)([a-zA-Z])`).ReplaceAllString(content, "$1 $2")
+		// 3. Fix spaces around punctuation
+		content = regexp.MustCompile(`([.,!?:;])(\S)`).ReplaceAllString(content, "$1 $2")
 		
-		// // Replace multiple spaces with a single space
-		// content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+		// 4. Fix spaces around parentheses and brackets
+		content = regexp.MustCompile(`\s*([(\[{])\s*`).ReplaceAllString(content, " $1")
+		content = regexp.MustCompile(`\s*([)\]}])\s*`).ReplaceAllString(content, "$1 ")
 		
-		// // Add space after period if missing
-		// content = regexp.MustCompile(`\.(\S)`).ReplaceAllString(content, ". $1")
-		
-		// // Add space after comma if missing
-		// content = regexp.MustCompile(`,(\S)`).ReplaceAllString(content, ", $1")
-		
-		// // Add space after colon if missing
-		// content = regexp.MustCompile(`\:(\S)`).ReplaceAllString(content, ": $1")
-		
-		// // Add space after semicolon if missing
-		// content = regexp.MustCompile(`\;(\S)`).ReplaceAllString(content, "; $1")
-		
-		// // Fix spaces around parentheses
-		// content = regexp.MustCompile(`\s*\(\s*`).ReplaceAllString(content, " (")
-		// content = regexp.MustCompile(`\s*\)\s*`).ReplaceAllString(content, ") ")
-		
-		// // Fix spaces around brackets
-		// content = regexp.MustCompile(`\s*\[\s*`).ReplaceAllString(content, " [")
-		// content = regexp.MustCompile(`\s*\]\s*`).ReplaceAllString(content, "] ")
-		
-		// // Fix spaces around special characters
-		// content = regexp.MustCompile(`([a-zA-Z])([.,!?;:])`).ReplaceAllString(content, "$1$2 ")
-		
-		// // Fix spaces around quotes
-		// content = regexp.MustCompile(`"(\S)`).ReplaceAllString(content, `" $1`)
-		// content = regexp.MustCompile(`(\S)"`).ReplaceAllString(content, `$1 "`)
-		
+		// 5. Handle mathematical symbols and special characters
+		content = regexp.MustCompile(`([=<>+\-×÷±≤≥≠∈∉∀∃∄∅∪∩⊂⊃⊆⊇])(\S)`).ReplaceAllString(content, "$1 $2")
+		content = regexp.MustCompile(`(\S)([=<>+\-×÷±≤≥≠∈∉∀∃∄∅∪∩⊂⊃⊆⊇])`).ReplaceAllString(content, "$1 $2")
+
+		// 6. Replace ASCII control characters (including nulls) with space to preserve word boundaries
+		content = regexp.MustCompile(`[\x00-\x1F\x7F]+`).ReplaceAllString(content, " ")
+
+		// 7. Fix multiple spaces and newlines
+		content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+		content = strings.TrimSpace(content)
+
+		// Append to main text
+		if text.Len() > 0 {
+			text.WriteString("\n\n")  // Double newline between pages
+		}
 		text.WriteString(content)
-		text.WriteString("\n") // Add newline between pages
+
+		// Log progress periodically
+		if i%10 == 0 {
+			log.Printf("Processed %d pages out of %d", i, totalPages)
+		}
 	}
 
-	return strings.TrimSpace(text.String()), nil
+	// If we had any errors but still got some text, log them as warnings
+	if len(processingErrors) > 0 {
+		log.Printf("Completed with %d errors: %v", len(processingErrors), strings.Join(processingErrors, "; "))
+	}
+
+	result := text.String()
+	if result == "" {
+		if len(processingErrors) > 0 {
+			return "", fmt.Errorf("failed to extract text: %v", strings.Join(processingErrors, "; "))
+		}
+		return "", fmt.Errorf("no text extracted from PDF")
+	}
+
+	log.Printf("Successfully extracted %d characters from PDF", len(result))
+	return result, nil
+}
+
+func cleanText(text string) string {
+	// Basic cleanup
+	text = strings.TrimSpace(text)
+
+	// Remove repeating dots (common in TOC)
+	text = regexp.MustCompile(`\.{2,}`).ReplaceAllString(text, "")
+	
+	// Remove page numbers at the end of lines (common in TOC)
+	text = regexp.MustCompile(`\s+\d+\s*$`).ReplaceAllString(text, "")
+	
+	// Remove common TOC patterns like "Chapter X:" or "X."" at start of lines
+	text = regexp.MustCompile(`(?m)^\s*(?:Chapter\s+)?\d+\.?\s*`).ReplaceAllString(text, "")
+	
+	// Fix common PDF text extraction issues
+	text = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(text, "$1 $2")  // Fix camelCase
+	text = regexp.MustCompile(`([a-zA-Z])(\d)`).ReplaceAllString(text, "$1 $2")  // Space between letters and numbers
+	text = regexp.MustCompile(`(\d)([a-zA-Z])`).ReplaceAllString(text, "$1 $2")  // Space between numbers and letters
+	
+	// Fix missing spaces after punctuation
+	text = regexp.MustCompile(`([.!?:;,])(\S)`).ReplaceAllString(text, "$1 $2")
+	
+	// Fix extra spaces or missing spaces around quotes and parentheses
+	text = regexp.MustCompile(`\s*"\s*(\S)`).ReplaceAllString(text, `" $1`)
+	text = regexp.MustCompile(`(\S)\s*"\s*`).ReplaceAllString(text, `$1 "`)
+	text = regexp.MustCompile(`\s*\(\s*(\S)`).ReplaceAllString(text, ` ($1`)
+	text = regexp.MustCompile(`(\S)\s*\)\s*`).ReplaceAllString(text, `$1) `)
+	
+	// Fix multiple spaces, including non-breaking spaces
+	text = regexp.MustCompile(`[\s\p{Zs}]+`).ReplaceAllString(text, " ")
+	
+	// Fix spaces around hyphens in compound words
+	text = regexp.MustCompile(`(\S)\s*-\s*(\S)`).ReplaceAllString(text, "$1-$2")
+	
+	// Fix common ligatures
+	replacements := map[string]string{
+		"ﬁ": "fi",
+		"ﬂ": "fl",
+		"ﬀ": "ff",
+		"ﬃ": "ffi",
+		"ﬄ": "ffl",
+	}
+	for ligature, replacement := range replacements {
+		text = strings.ReplaceAll(text, ligature, replacement)
+	}
+	
+	return strings.TrimSpace(text)
 }
 
 func chunkText(text string) []string {
-	// Clean up the text first
-	text = strings.TrimSpace(text)
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
+	// Initialize tokenizer
+	tokenizer := sentences.NewSentenceTokenizer(nil)
+	
+	// Get sentences
+	sentences := tokenizer.Tokenize(text)
+	log.Printf("Split text into %d sentences", len(sentences))
 
-	// Initialize the segmenter with English language
-	segmenter := sentencizer.NewSegmenter("en")
-
-	// Split text into sentences using Sentencizer
-	sentences := segmenter.Segment(text)
-
-	var allChunks []string
+	var chunks []string
 	var currentChunk strings.Builder
 	wordCount := 0
-	const maxWordsPerChunk = 50 // Keep the same word limit for TTS optimization
+	const maxWordsPerChunk = 30
 
-	for _, sentence := range sentences {
-		sentence = strings.TrimSpace(sentence)
-		if sentence == "" {
+	// Process each sentence
+	for i, s := range sentences {
+		sentenceText := s.Text
+		words := strings.Fields(sentenceText)
+		
+		// If a single sentence is too long, split it
+		if len(words) > maxWordsPerChunk {
+			log.Printf("Long sentence found (%d words), splitting: %s", len(words), truncateString(sentenceText, 100))
+			subChunks := splitLongSentence(sentenceText, maxWordsPerChunk)
+			chunks = append(chunks, subChunks...)
 			continue
 		}
 
-		words := strings.Fields(sentence)
-		
-		// If a single sentence is longer than maxWordsPerChunk, split it
-		if len(words) > maxWordsPerChunk {
-			// First, add any existing chunk
+		// If adding this sentence would exceed the word limit
+		if wordCount + len(words) > maxWordsPerChunk {
+			// Save current chunk if not empty
 			if currentChunk.Len() > 0 {
-				chunk := strings.TrimSpace(currentChunk.String())
-				if chunk != "" {
-					allChunks = append(allChunks, chunk)
-				}
+				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
 				currentChunk.Reset()
 				wordCount = 0
 			}
-
-			// Then split the long sentence into chunks
-			for i := 0; i < len(words); i += maxWordsPerChunk {
-				end := i + maxWordsPerChunk
-				if end > len(words) {
-					end = len(words)
-				}
-				subChunk := strings.Join(words[i:end], " ")
-				// Only add ellipsis if this is not the end of the sentence
-				if end < len(words) {
-					subChunk += "..."
-				}
-				allChunks = append(allChunks, subChunk)
-			}
-			continue
 		}
 
-		// Start a new chunk if adding this sentence would exceed the word limit
-		if wordCount + len(words) > maxWordsPerChunk {
-			chunk := strings.TrimSpace(currentChunk.String())
-			if chunk != "" {
-				allChunks = append(allChunks, chunk)
-			}
+		// Add the sentence to the current chunk
+		if currentChunk.Len() > 0 {
+			currentChunk.WriteString(" ")
+		}
+		currentChunk.WriteString(sentenceText)
+		wordCount += len(words)
+
+		// Log progress periodically
+		if i > 0 && i%100 == 0 {
+			log.Printf("Processed %d sentences, generated %d chunks so far", i, len(chunks))
+		}
+	}
+
+	// Add the last chunk if not empty
+	if currentChunk.Len() > 0 {
+		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+	}
+
+	log.Printf("Final chunk count: %d", len(chunks))
+	
+	// Log the first few characters of each chunk for debugging
+	for i, chunk := range chunks {
+		log.Printf("Chunk %d (%d words): %s", i+1, len(strings.Fields(chunk)), truncateString(chunk, 100))
+	}
+
+	return chunks
+}
+
+// Helper function to split long sentences
+func splitLongSentence(sentence string, maxWords int) []string {
+	words := strings.Fields(sentence)
+	var chunks []string
+	var currentChunk strings.Builder
+	wordCount := 0
+
+	for _, word := range words {
+		if wordCount >= maxWords {
+			chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
 			currentChunk.Reset()
 			wordCount = 0
 		}
 
-		// Add the sentence to the current chunk
-		if wordCount > 0 {
+		if currentChunk.Len() > 0 {
 			currentChunk.WriteString(" ")
 		}
-		currentChunk.WriteString(sentence)
-		wordCount += len(words)
+		currentChunk.WriteString(word)
+		wordCount++
 	}
 
-	// Add any remaining text as a chunk
 	if currentChunk.Len() > 0 {
-		chunk := strings.TrimSpace(currentChunk.String())
-		if chunk != "" {
-			allChunks = append(allChunks, chunk)
+		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+	}
+
+	return chunks
+}
+
+// Helper function to truncate string for logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+func fallbackChunking(text string) []string {
+	text = cleanText(text) // Clean the text first
+	const maxWordsPerChunk = 30
+	words := strings.Fields(text)
+	var chunks []string
+	var currentChunk strings.Builder
+	wordCount := 0
+
+	for i, word := range words {
+		if wordCount >= maxWordsPerChunk {
+			chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+			currentChunk.Reset()
+			wordCount = 0
+		}
+
+		if currentChunk.Len() > 0 {
+			currentChunk.WriteString(" ")
+		}
+		currentChunk.WriteString(word)
+		wordCount++
+
+		// Log progress for large documents
+		if i > 0 && i%1000 == 0 {
+			log.Printf("Processed %d words out of %d in fallback mode", i, len(words))
 		}
 	}
 
-	return allChunks
+	if currentChunk.Len() > 0 {
+		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+	}
+
+	return chunks
 }
 
 func uploadHandler(c *gin.Context) {
