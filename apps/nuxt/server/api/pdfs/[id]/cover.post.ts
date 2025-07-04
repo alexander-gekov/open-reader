@@ -70,7 +70,6 @@ export default defineEventHandler(async (event) => {
         Key: coverKey,
         Body: file.data,
         ContentType: file.type,
-        ACL: "public-read",
       })
     );
 
