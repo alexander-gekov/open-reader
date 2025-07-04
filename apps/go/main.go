@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/alexandergekov/open-reader/apps/go/tts"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/ledongthuc/pdf"
@@ -28,6 +32,8 @@ func loadEnv() {
 		log.Printf("Warning: Could not get working directory: %v", err)
 		return
 	}
+
+	log.Printf("Current working directory: %s", dir)
 
 	// Try to find env file in current directory or apps/go
 	envPaths := []string{
@@ -75,10 +81,32 @@ func loadEnv() {
 		value = strings.Trim(value, `"'`)
 		
 		os.Setenv(key, value)
-		if key == "ELEVENLABS_API_KEY" {
-			log.Printf("Successfully loaded ElevenLabs API key: %s", value[:10] + "...")
+		
+		// Log environment variables being set (but mask sensitive values)
+		if strings.Contains(strings.ToLower(key), "key") || strings.Contains(strings.ToLower(key), "secret") {
+			log.Printf("Set %s=***masked***", key)
+		} else {
+			log.Printf("Set %s=%s", key, value)
 		}
 	}
+
+	// Log final AWS-related environment variables
+	log.Printf("Final AWS configuration:")
+	log.Printf("AWS_REGION=%s", os.Getenv("AWS_REGION"))
+	log.Printf("AWS_S3_BUCKET=%s", os.Getenv("AWS_S3_BUCKET"))
+	log.Printf("AWS_ACCESS_KEY=%s", maskString(os.Getenv("AWS_ACCESS_KEY")))
+	log.Printf("AWS_SECRET_ACCESS_KEY=%s", maskString(os.Getenv("AWS_SECRET_ACCESS_KEY")))
+}
+
+// Helper function to mask sensitive strings
+func maskString(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	if len(s) <= 4 {
+		return "****"
+	}
+	return s[:4] + "****"
 }
 
 type TTSRequest struct {
@@ -108,6 +136,8 @@ type ChunkProcessor struct {
 	stopProcess chan bool      // Channel to stop processing
 	filename    string        // Store the current file's name
 	settings    TTSSettings   // Store TTS settings
+	s3Client    *s3.S3       // AWS S3 client
+	bucketName  string       // AWS S3 bucket name
 }
 
 type UploadResponse struct {
@@ -129,26 +159,55 @@ func main() {
 	// Get API key but don't require it
 	apiKey := os.Getenv("ELEVENLABS_API_KEY")
 
-	// Create required directories
-	requiredDirs := []string{
-		"./uploads",
-		"./uploads/audio",
+	// Get AWS configuration
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		awsRegion = "us-east-1" // Default region
 	}
-	
-	for _, dir := range requiredDirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatalf("Failed to create directory %s: %v", dir, err)
-		}
+
+	bucketName := os.Getenv("AWS_S3_BUCKET")
+	if bucketName == "" {
+		log.Fatal("AWS_S3_BUCKET environment variable is required")
 	}
+
+	log.Printf("AWS Configuration - Region: %s, Bucket: %s", awsRegion, bucketName)
+
+	// Initialize AWS session
+	sess := session.Must(session.NewSession(&aws.Config{
+		Region: aws.String(awsRegion),
+		Credentials: credentials.NewStaticCredentials(
+			os.Getenv("AWS_ACCESS_KEY"),
+			os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			"",
+		),
+	}))
+
+	// Initialize S3 client
+	s3Client := s3.New(sess)
+
+	// Test S3 connection and bucket access
+	_, err := s3Client.HeadBucket(&s3.HeadBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		log.Fatalf("Failed to access S3 bucket %s: %v", bucketName, err)
+	}
+
+	log.Printf("Successfully connected to S3 bucket: %s", bucketName)
 
 	// Initialize the processor
 	processor = &ChunkProcessor{
-		audioFiles: make(map[int]string),
-		processing: make(map[int]bool),
+		audioFiles:  make(map[int]string),
+		processing:  make(map[int]bool),
 		client:     &http.Client{Timeout: 30 * time.Second},
-		apiKey:     apiKey, // This is now optional
+		apiKey:     apiKey,
 		audioCache: make(map[string][]byte),
+		s3Client:   s3Client,
+		bucketName: bucketName, // Make sure bucketName is set
 	}
+
+	// Log processor initialization
+	log.Printf("Initialized processor with bucket: %s", processor.bucketName)
 
 	// Start a goroutine to periodically clean old cache entries
 	go func() {
@@ -171,9 +230,6 @@ func main() {
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
-
-	// Serve static files from the uploads directory under a different path
-	r.Static("/static/audio", "./uploads/audio")
 
 	r.POST("/upload", uploadHandler)
 	r.GET("/audio/status/:chunk", getAudioStatusHandler)
@@ -507,13 +563,11 @@ func getAudioStatusHandler(c *gin.Context) {
 	}
 
 	// Check if we have an audio file for this chunk
-	audioFilename, exists := processor.audioFiles[chunkIndex]
+	audioURL, exists := processor.audioFiles[chunkIndex]
 	if exists {
-		// Return the full URL path
-		fullURL := fmt.Sprintf("http://localhost:8080/static/audio/%s", audioFilename)
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "ready",
-			"url":       fullURL,
+			"url":       audioURL,
 			"hasNext":   chunkIndex + 1 < len(processor.chunks),
 			"nextReady": processor.audioFiles[chunkIndex + 1] != "",
 		})
@@ -590,15 +644,21 @@ func testAudioHandler(c *gin.Context) {
 		return
 	}
 
+	// Upload to S3
+	testFileName := fmt.Sprintf("test_audio_%d.mp3", time.Now().Unix())
+	audioURL, err := processor.uploadToS3(audioData, testFileName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to upload test audio: %v", err)})
+		return
+	}
+
 	// Store in cache
 	processor.mutex.Lock()
 	processor.audioCache[testText] = audioData
 	processor.mutex.Unlock()
 
-	c.Header("Content-Type", "audio/mpeg")
-	c.Header("Content-Length", fmt.Sprintf("%d", len(audioData)))
-	c.Header("Cache-Control", "no-cache")
-	c.Data(http.StatusOK, "audio/mpeg", audioData)
+	// Redirect to the S3 URL
+	c.Redirect(http.StatusTemporaryRedirect, audioURL)
 }
 
 func (cp *ChunkProcessor) ProcessChunks(chunks []string, filename string, settings TTSSettings) string {
@@ -633,18 +693,6 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 		return
 	}
 
-	// Check if audio file already exists
-	expectedFileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
-	expectedFilePath := path.Join("uploads", "audio", expectedFileName)
-	
-	if _, err := os.Stat(expectedFilePath); err == nil {
-		// File exists, reuse it
-		cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
-		delete(cp.processing, index)
-		cp.mutex.Unlock()
-		return
-	}
-
 	// Mark this chunk as being processed
 	cp.processing[index] = true
 	text := cp.chunks[index]
@@ -668,22 +716,23 @@ func (cp *ChunkProcessor) generateTTS(index int) {
 		return
 	}
 
-	// Save the audio file
-	audioPath := path.Join("uploads", "audio", expectedFileName)
-	if err := os.WriteFile(audioPath, audioData, 0644); err != nil {
+	// Upload to S3
+	expectedFileName := fmt.Sprintf("%s_chunk_%d.mp3", cp.filename, index)
+	audioURL, err := cp.uploadToS3(audioData, expectedFileName)
+	if err != nil {
 		cp.mutex.Lock()
-		cp.lastError = fmt.Sprintf("failed to save audio file: %v", err)
+		cp.lastError = fmt.Sprintf("failed to upload audio to S3: %v", err)
 		delete(cp.processing, index)
 		cp.mutex.Unlock()
-		log.Printf("Error saving audio file for chunk %d: %v", index, err)
+		log.Printf("Error uploading audio for chunk %d: %v", index, err)
 		return
 	}
 
 	cp.mutex.Lock()
-	cp.audioFiles[index] = expectedFileName // Store just the filename, not the full path
+	cp.audioFiles[index] = audioURL // Store the full S3 URL
 	delete(cp.processing, index)
 	cp.mutex.Unlock()
-	log.Printf("Successfully generated audio for chunk %d", index)
+	log.Printf("Successfully generated and uploaded audio for chunk %d", index)
 }
 
 func (cp *ChunkProcessor) callElevenLabsTTS(text string) ([]byte, error) {
@@ -809,4 +858,59 @@ func min(a, b int) int {
 func generateAudio(text string, settings TTSSettings, options map[string]string) ([]byte, error) {
 	provider := tts.NewTTSProvider(settings.Provider, settings.APIKey)
 	return provider.GenerateAudio(text, options)
+}
+
+func (cp *ChunkProcessor) uploadToS3(audioData []byte, filename string) (string, error) {
+	// Validate inputs
+	if cp.bucketName == "" {
+		log.Printf("Error: S3 bucket name is empty")
+		return "", fmt.Errorf("S3 bucket name is not configured")
+	}
+
+	if cp.s3Client == nil {
+		log.Printf("Error: S3 client is not initialized")
+		return "", fmt.Errorf("S3 client is not initialized")
+	}
+
+	if len(audioData) == 0 {
+		log.Printf("Error: No audio data to upload")
+		return "", fmt.Errorf("no audio data to upload")
+	}
+
+	log.Printf("Uploading %d bytes to S3 bucket '%s' with key 'audio/%s'", len(audioData), cp.bucketName, filename)
+
+	input := &s3.PutObjectInput{
+		Bucket:      aws.String(cp.bucketName),
+		Key:         aws.String(fmt.Sprintf("audio/%s", filename)),
+		Body:        bytes.NewReader(audioData),
+		ContentType: aws.String("audio/mpeg"),
+	}
+
+	// Log the actual values being used in the PutObject call
+	log.Printf("S3 PutObject Input - Bucket: %s, Key: audio/%s", *input.Bucket, filename)
+
+	_, err := cp.s3Client.PutObject(input)
+	if err != nil {
+		log.Printf("Failed to upload to S3: %v", err)
+		return "", fmt.Errorf("failed to upload to S3: %v", err)
+	}
+
+	log.Printf("Successfully uploaded audio file to S3: %s", filename)
+
+	// Return the S3 URL
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/audio/%s", 
+		cp.bucketName,
+		*cp.s3Client.Config.Region,
+		filename), nil
+}
+
+// Helper function to get bucket names
+func getBucketNames(buckets []*s3.Bucket) []string {
+	names := make([]string, len(buckets))
+	for i, bucket := range buckets {
+		if bucket.Name != nil {
+			names[i] = *bucket.Name
+		}
+	}
+	return names
 } 

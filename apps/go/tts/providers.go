@@ -171,18 +171,6 @@ func (p *PollyProvider) GenerateAudio(text string, options map[string]string) ([
 		return nil, fmt.Errorf("failed to read audio stream: %v", err)
 	}
 
-	// Save to file if filename is provided
-	if filename, ok := options["filename"]; ok && filename != "" {
-		chunkStr := options["chunk"]
-		audioFileName := fmt.Sprintf("%s_chunk_%s.mp3", filename, chunkStr)
-		audioPath := path.Join("uploads", "audio", audioFileName)
-
-		err = os.WriteFile(audioPath, audioData, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("failed to save audio file: %v", err)
-		}
-	}
-
 	return audioData, nil
 }
 
